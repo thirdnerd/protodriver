@@ -78,6 +78,20 @@ test("run-tests refuses a dependency-staging environment failure before verdict"
   );
 });
 
+test("run-tests names missing fresh-clone dependencies before running a suite", async (t) => {
+  const fixture = await reviewFixture(t, { missingDependency: true });
+  await assert.rejects(
+    execute(fixture.script, [fixture.branch], { env: fixture.env }),
+    (error) => {
+      assert.equal(error.code, 2);
+      assert.match(error.stderr, /run-tests\.environment\.dependencies-missing: no node_modules for sample/u);
+      assert.match(error.stderr, /node tools\/install-package-build-dependencies\.mjs/u);
+      assert.doesNotMatch(error.stdout, /VERDICT:/u);
+      return true;
+    },
+  );
+});
+
 test("run-tests keeps Chrome evidence outside extraction and does not rotate it on the next review", async t => {
   const fixture = await reviewFixture(t);
   const env = { ...fixture.env, REVIEW_CAPTURE_EVIDENCE: "1", PDR_CHROME_EVIDENCE_DIR: fixture.ambientTmp };
@@ -161,7 +175,7 @@ not ok 1 - deliberate named review failure
 x pass 0
 x fail 1`;
 
-async function reviewFixture(t, { failingCopy = false, failingLogWrite = false, failingSuite = false } = {}) {
+async function reviewFixture(t, { failingCopy = false, failingLogWrite = false, failingSuite = false, missingDependency = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "run-tests-environment-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const home = join(root, "home");
@@ -196,8 +210,12 @@ async function reviewFixture(t, { failingCopy = false, failingLogWrite = false, 
   await git(repository, ["add", "candidate.txt"]);
   await git(repository, ["commit", "-q", "--no-gpg-sign", "-m", "candidate"]);
 
-  await mkdir(join(repository, "sample", "node_modules"));
-  await writeFile(join(repository, "sample", "node_modules", "dependency.txt"), "staged\n");
+  if (!missingDependency) {
+    await mkdir(join(repository, "sample", "node_modules"));
+    await writeFile(join(repository, "sample", "node_modules", "dependency.txt"), "staged\n");
+  }
+  await mkdir(join(repository, "packages", "contracts", "node_modules"));
+  await writeFile(join(repository, "packages", "contracts", "node_modules", "dependency.txt"), "staged\n");
   await executable(join(fakeBin, "node"), `#!/bin/sh
 set -eu
 case "\${TMPDIR:-}" in

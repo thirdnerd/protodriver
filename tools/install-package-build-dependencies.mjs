@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "../packages/generated-cli/src/node-entry-point.ts";
-import { packageTarget } from "./package/targets.mjs";
+import { hostPackageTarget, packageTarget } from "./package/targets.mjs";
 
 const defaultSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -41,7 +41,7 @@ const linuxApprovals = Object.freeze([
   }),
 ]);
 
-export function packageBuildDependencyPlan(targetId) {
+export function packageBuildDependencyPlan(targetId = hostPackageTarget().id) {
   const target = packageTarget(targetId);
   const installArguments = target.os === "linux" ? ["ci"] : ["ci", "--ignore-scripts"];
   return Object.freeze({
@@ -186,12 +186,11 @@ function parseArguments(argv) {
     else if (name === "--npm-cli") npmCli = value;
     else throw new Error(usage());
   }
-  if (target === undefined) throw new Error(usage());
   return { npmCli, sourceDirectory, target };
 }
 
 function usage() {
-  return "usage: node tools/install-package-build-dependencies.mjs --target TARGET [--source DIRECTORY] [--npm-cli FILE]";
+  return "usage: node tools/install-package-build-dependencies.mjs [--target TARGET] [--source DIRECTORY] [--npm-cli FILE]";
 }
 
 if (await isMainModule(import.meta.url)) {

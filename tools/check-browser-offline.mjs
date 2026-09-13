@@ -6,11 +6,17 @@ import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "../packages/generated-cli/src/node-entry-point.ts";
+import { isPathWithin } from "./path-containment.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultSourceRoot = resolve(repositoryRoot, "apps/web/src");
 const requireFromWeb = createRequire(resolve(repositoryRoot, "apps/web/package.json"));
-const ts = requireFromWeb("typescript");
+let ts;
+function loadTypeScript() {
+  // Package assembly imports this module before installing workspaces. Resolve
+  // the parser only when an offline check actually runs after installation.
+  return ts ??= requireFromWeb("typescript");
+}
 const sourceExtensions = new Set([".html", ".css", ".ts", ".tsx", ".js", ".jsx", ".mjs"]);
 const resourceAttributes = new Map([
   ["audio", ["src"]],
@@ -98,6 +104,7 @@ export function inspectBrowserCss(sourceText) {
 }
 
 export function inspectBrowserScript(sourceText, path = "browser-source.ts") {
+  loadTypeScript();
   const kind = path.endsWith("x") ? ts.ScriptKind.TSX : path.endsWith(".js") || path.endsWith(".mjs")
     ? ts.ScriptKind.JS
     : ts.ScriptKind.TS;
@@ -265,7 +272,7 @@ async function browserRuntimeSourceFiles(sourceRoot) {
         throw new Error(`browser-offline: cannot resolve runtime import ${JSON.stringify(specifier)} from ${relative(repositoryRoot, path)}`, { cause });
       }
       const resolved = resolve(dependency);
-      if (!resolved.startsWith(`${repositoryRoot}/`)) continue;
+      if (!isPathWithin(repositoryRoot, resolved)) continue;
       if (!sourceExtensions.has(extname(resolved))) {
         assets.add(resolved);
         continue;
@@ -279,6 +286,7 @@ async function browserRuntimeSourceFiles(sourceRoot) {
 }
 
 function runtimeModuleSpecifiers(sourceText, path) {
+  loadTypeScript();
   const kind = path.endsWith("x") ? ts.ScriptKind.TSX : path.endsWith(".js") || path.endsWith(".mjs")
     ? ts.ScriptKind.JS
     : ts.ScriptKind.TS;

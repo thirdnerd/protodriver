@@ -14,6 +14,7 @@ import {
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("the package-build recipe covers the complete two-host workspace closure", async () => {
+  assert.equal(packageBuildDependencyPlan().target, `${process.platform}-${process.arch}`);
   const required = await workspaceClosure(["apps/cli", "apps/web"]);
   assert.equal(required.length, 14);
   assert.deepEqual(PACKAGE_BUILD_WORKSPACES, required);

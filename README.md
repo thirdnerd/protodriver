@@ -113,7 +113,12 @@ must allow the browser to read its response.
 
 ## Working on protodriver itself
 
-One command runs everything:
+Install locked workspace dependencies once after cloning (or let the package
+build above install them). The test loop then runs with one command:
+
+```bash
+node tools/install-package-build-dependencies.mjs
+```
 
 ```bash
 bash tools/run-tests.sh
@@ -123,7 +128,8 @@ Pass a commit or branch name to test a different ref.
 
 By default, it extracts HEAD into a clean directory, discovers every workspace
 and test suite rather than reading a list, stages dependencies for all of them
-before running any, and prints a verdict.
+before running any, and prints a verdict. If dependencies are missing, it stops
+with the install command instead of running a partial suite.
 
 Three checks also run standalone:
 

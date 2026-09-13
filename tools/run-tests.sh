@@ -68,9 +68,17 @@ test_roots=$(find . -type f -path '*/test/*.test.mjs' -not -path '*/node_modules
   | sed -e 's|^\./||' -e 's|/test/.*$||' | sort -u)
 echo "workspaces discovered: $(echo "$workspaces" | tr '\n' ' ')"
 echo "test suites discovered: $(echo "$test_roots" | tr '\n' ' ')"
+missing_dependencies=()
 for w in $workspaces; do
-  if [ -d "$repository_root/$w/node_modules" ] \
-    && ! cp -r "$repository_root/$w/node_modules" "$w/node_modules"; then
+  [ -d "$repository_root/$w/node_modules" ] || missing_dependencies+=("$w")
+done
+if [ "${#missing_dependencies[@]}" -ne 0 ]; then
+  printf 'run-tests.environment.dependencies-missing: no node_modules for %s\n' "${missing_dependencies[*]}" >&2
+  echo 'run-tests: run node tools/install-package-build-dependencies.mjs once, then rerun bash tools/run-tests.sh' >&2
+  exit 2
+fi
+for w in $workspaces; do
+  if ! cp -r "$repository_root/$w/node_modules" "$w/node_modules"; then
     echo "run-tests.environment.dependency-staging-failed: could not stage $w/node_modules in disk-backed scratch" >&2
     exit 2
   fi

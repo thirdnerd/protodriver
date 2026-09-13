@@ -11,6 +11,10 @@ of the Node process, installs the locked workspace dependencies, builds the
 shared browser distribution, builds the self-contained CLI/browser archive,
 and runs that platform's hardware-free package smoke. The resulting archive is
 written beneath `<target>-package-output/`.
+This works from a fresh clone: the browser bundler is loaded only after the
+workspace installation. To prepare dependencies for tests without building an
+archive, run `node tools/install-package-build-dependencies.mjs` once; the
+test command deliberately stops with that instruction if they are absent.
 
 The supported native targets are:
 

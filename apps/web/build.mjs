@@ -2,7 +2,6 @@ import { cp, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { build } from "esbuild";
 import { isMainModule } from "../../packages/generated-cli/src/node-entry-point.ts";
 
 const defaultSourceRoot = dirname(fileURLToPath(import.meta.url));
@@ -13,6 +12,9 @@ export async function buildWebDistribution({
 } = {}) {
   const sourceRoot = resolve(sourceDirectory);
   const output = resolve(outputDirectory);
+  // The package entry point installs workspaces before invoking this builder.
+  // A static esbuild import would stop that installer from loading at all.
+  const { build } = await import("esbuild");
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   const result = await build({
