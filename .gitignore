@@ -1,0 +1,27 @@
+# Installed by `npm ci` from the committed lockfile; never committed.
+node_modules/
+
+# tsc emits declarations only, and only on demand.
+dist/
+*.tsbuildinfo
+
+# Editor and OS noise.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Device captures are large and are deliberately not committed. Git ignores
+# patterns only for untracked files.
+captures/*
+
+# Corpus packages, descriptions and identities are derived on demand from Lua.
+/corpus/*/artifacts/
+
+# Authored packages are run outputs; ZIP conformance anchors use .zip instead.
+*.pdpkg
+
+# Build outputs. The shipped package procedures write delivery archives into
+# $PWD/<target>-package-output inside this working tree; they are products, not
+# sources.
+*-package-output/

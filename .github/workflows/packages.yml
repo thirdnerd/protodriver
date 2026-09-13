@@ -1,0 +1,93 @@
+name: packages
+
+# Building every target is a release activity, not a per-commit one: the
+# five-runner matrix runs when requested or when a release tag is pushed.
+# Local builders use the same tools/build-package.mjs entry point and do not
+# depend on Actions.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  package:
+    name: ${{ matrix.target }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: win32-x64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    steps:
+      # Keep committed bytes unchanged on Windows as well as POSIX hosts.
+      - name: Configure checkout line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+      - name: Install Linux package prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap busybox-static libudev-dev
+      - name: Build and smoke dispatch package
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: node tools/build-package.mjs --target "$PACKAGE_TARGET" --output package-output
+        env:
+          PACKAGE_TARGET: ${{ matrix.target }}
+      # A tag is a legal Git ref, not trusted shell source. Pass it through the
+      # environment so the script cannot interpret its bytes before validation.
+      - name: Build and smoke release package
+        if: github.event_name == 'push'
+        shell: bash
+        run: node tools/build-package.mjs --target "$PACKAGE_TARGET" --output package-output --release-tag "$RELEASE_TAG"
+        env:
+          PACKAGE_TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ github.ref_name }}
+      - uses: actions/attest-build-provenance@v4
+        if: github.event_name == 'push'
+        with:
+          subject-path: package-output/protodriver-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: protodriver-${{ matrix.target }}
+          path: package-output/protodriver-*
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: protodriver-*
+          path: release-assets
+          merge-multiple: true
+      # Keep the tag out of script text here especially: this step has a token
+      # with contents: write. Quoted env expansion passes one literal argument.
+      - name: Check assets and create draft release
+        shell: bash
+        run: node tools/release-assets.mjs --tag "$RELEASE_TAG" --directory release-assets --publish-draft
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}

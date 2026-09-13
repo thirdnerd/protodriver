@@ -1,0 +1,39 @@
+{
+  "formatVersion": 1,
+  "fixtureId": "ti84-ce-blue-screenshot-oracle",
+  "source": {
+    "capturedOn": "2026-08-29",
+    "subject": "live TI-84 Plus CE displaying a blue-line parabola",
+    "reason": "the earlier retained white, grey, and green screen cannot discriminate red from blue"
+  },
+  "artifacts": {
+    "wireCapture": {
+      "file": "ce-blue.pcap",
+      "lengthBytes": 212767,
+      "sha256": "085c59b65c76e1b874dabb7d24b1629bec0e8d39ad4fd702b8f7eab842664158"
+    },
+    "retainedProductOutput": {
+      "file": "ce-blue-parabola.bmp",
+      "lengthBytes": 153666,
+      "sha256": "f13a25cc9c310ce2fc8dea0246c5fd3b291bc83de6804dc317d071678aac38b0",
+      "role": "companion output only; never an input to the decoder control"
+    }
+  },
+  "selection": {
+    "bus": 1,
+    "deviceAddress": 86,
+    "event": 67,
+    "transferType": 3,
+    "endpointAddress": 129
+  },
+  "expected": {
+    "pcapRecords": 706,
+    "inboundTransfers": 155,
+    "responseBytes": 154406,
+    "responseSha256": "c9aab30b871acbc2d716ce9e73d5d782e86bce147f54313c75e5fbcbadd0f9fa",
+    "screenBytes": 153600,
+    "screenSha256": "18214f6cb20f393a6e8293d181715af9abda74f32f943941aaa0a5e5d90cf125",
+    "pureBluePixels": 388,
+    "pureRedPixels": 0
+  }
+}

@@ -1,0 +1,96 @@
+name: docs
+
+# MANUAL ONLY. No `push`, no `pull_request`, no `schedule`.
+#
+# Every check here runs locally, faster, with the commands below. Running them
+# on a hosted runner is a convenience for someone who wants a clean-machine
+# result, not the place the checks are expected to happen.
+#
+# Run from the Actions tab, or:
+#
+#     gh workflow run docs.yml
+#
+# Locally, which is faster and free:
+#
+#     cd packages/contracts && npm ci && npx --no-install tsc --noEmit
+#     cd packages/contracts && node --test test/clone.test.mjs
+#     cd packages/core && npm ci && npm run verify
+#     cd packages/transport-mock && npm ci && npm run verify
+#     cd packages/transport-node-serial && npm ci && npm run verify
+#     cd apps/cli && npm ci && npm run verify
+#
+# Reinstate a push trigger when there is product code whose breakage a
+# human would not otherwise notice. Until then the compiler is the loop.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  contracts:
+    name: contracts compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+        working-directory: packages/contracts
+      # Carries the wire-guard assertions: the wire types are clone-safe and
+      # the live objects are not. Both are checked here, at no extra cost.
+      - run: npx --no-install tsc --noEmit
+        working-directory: packages/contracts
+      - run: node --test test/clone.test.mjs
+        working-directory: packages/contracts
+
+  core:
+    name: core runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+        working-directory: packages/core
+      - run: npm run verify
+        working-directory: packages/core
+
+  transport-mock:
+    name: mock connection replacement
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+        working-directory: packages/transport-mock
+      - run: npm run verify
+        working-directory: packages/transport-mock
+
+  transport-node-serial:
+    name: Node serial transport
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+        working-directory: packages/transport-node-serial
+      - run: npm run verify
+        working-directory: packages/transport-node-serial
+
+  cli:
+    name: node capture destination
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+        working-directory: apps/cli
+      - run: npm run verify
+        working-directory: apps/cli

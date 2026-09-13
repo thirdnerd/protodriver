@@ -1,0 +1,27 @@
+{
+  "name": "@protodriver/generated-cli",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./errors": "./src/errors.ts",
+    "./node-entry-point": "./src/node-entry-point.ts"
+  },
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@protodriver/contracts": "file:../contracts",
+    "@protodriver/control-model": "file:../control-model"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "typescript": "5.6.3"
+  }
+}

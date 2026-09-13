@@ -1,0 +1,35 @@
+$ node apps/cli/src/pdr.ts pack corpus/ti84-plus-ce ti84-plus-ce.pdpkg
+ti84-plus-ce.pdpkg (11032 bytes; source-set sha256:7b22715b4a8d1ecf88c3e3fb95fcbe60b7f9ee6bc8d28c493983c4e242e81c24)
+
+$ node apps/cli/src/pdr.ts run ti84-plus-ce.pdpkg --help
+ti84-plus-ce (ti84-plus-ce, device/v2)
+
+Modes:
+  screenshot                   mode screenshot
+
+Tasks:
+  capture_screenshot: Capture screenshot [read-only; safe-to-repeat; file image/bmp .bmp]
+
+Transport requests declared; acquisition remains subject to host approval.
+Profile usb: usb; modes screenshot
+
+$ node apps/cli/src/pdr.ts run ti84-plus-ce.pdpkg capture_screenshot --help
+ti84-plus-ce — Capture screenshot
+
+Usage: pdr run <package> [--mode id] [--profile id] [--candidate id] [--expect-source-set-sha256 hex] [--json] [--save-result path] capture_screenshot
+
+Risk: read-only
+Repeatability: safe-to-repeat
+
+Result:
+  file (image/bmp, .bmp)
+    Current display, 320 by 240 RGB565
+    declared bytes 153666..153666
+
+JSON:
+  --json emits one fixed operation envelope; result contains every declared field.
+
+File result:
+  --save-result <path.bmp> writes the declared image/bmp bytes unchanged.
+
+$ node apps/cli/src/pdr.ts run ti84-plus-ce.pdpkg capture_screenshot --save-result ti84-plus-ce-screenshot.bmp

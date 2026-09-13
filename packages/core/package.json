@@ -1,0 +1,48 @@
+{
+  "name": "@protodriver/core",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./acquisition": "./src/acquisition.ts",
+    "./capture-rpc": "./src/capture-rpc.ts",
+    "./capture-path": "./src/capture-path.ts",
+    "./capture": "./src/capture.ts",
+    "./clock": "./src/clock.ts",
+    "./diagnostics": "./src/diagnostics.ts",
+    "./events": "./src/events.ts",
+    "./ingress": "./src/ingress.ts",
+    "./input-retirement": "./src/input-retirement.ts",
+    "./lifecycle": "./src/lifecycle.ts",
+    "./leases": "./src/leases.ts",
+    "./limits": "./src/limits.ts",
+    "./resources": "./src/resources.ts",
+    "./recording-connection": "./src/recording-connection.ts",
+    "./rpc": "./src/rpc.ts",
+    "./retained-session": "./src/retained-session.ts",
+    "./authored-admission": "./src/authored-admission.ts",
+    "./authored-module": "./src/authored-module.ts",
+    "./authored-poll": "./src/authored-poll.ts",
+    "./serial-profile": "./src/serial-profile.ts",
+    "./usb-control": "./src/usb-control.ts",
+    "./usb-profile": "./src/usb-profile.ts"
+  },
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "lint:clock": "node ../../tools/check-clock-access.mjs",
+    "test": "node --test test/*.test.mjs",
+    "verify": "npm run check && npm test && npm run lint:clock"
+  },
+  "dependencies": {
+    "@protodriver/contracts": "file:../contracts",
+    "@protodriver/lua-vm": "file:../lua-vm"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3"
+  }
+}

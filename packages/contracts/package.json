@@ -1,0 +1,28 @@
+{
+  "name": "@protodriver/contracts",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/runtime.js"
+    },
+    "./limits": "./src/limits.ts",
+    "./lua-value-abi": "./src/lua-value-abi.ts",
+    "./units": "./src/units.ts"
+  },
+  "types": "dist/index.d.ts",
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3"
+  }
+}

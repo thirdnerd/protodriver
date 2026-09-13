@@ -1,0 +1,245 @@
+{
+  "corpusId": "pdrv-value-abi-v1",
+  "claimLevel": "hand-authored-structural-and-two-host-bridge-conformance-corpus",
+  "valueCases": [
+    {
+      "id": "boolean-false",
+      "members": ["boolean"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "boolean", "value": false },
+      "envelopeKind": "value",
+      "expectedHex": "504452560101000000050100000000"
+    },
+    {
+      "id": "boolean-true",
+      "members": ["boolean"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "boolean", "value": true },
+      "envelopeKind": "value",
+      "expectedHex": "504452560101000000050200000000"
+    },
+    {
+      "id": "signed-i64-minimum",
+      "members": ["signed-64-boundaries"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "i64", "decimal": "-9223372036854775808" },
+      "envelopeKind": "value",
+      "expectedHex": "5044525601010000000d03000000088000000000000000"
+    },
+    {
+      "id": "signed-i64-maximum",
+      "members": ["signed-64-boundaries"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "i64", "decimal": "9223372036854775807" },
+      "envelopeKind": "value",
+      "expectedHex": "5044525601010000000d03000000087fffffffffffffff"
+    },
+    {
+      "id": "unsigned-u64-maximum",
+      "members": ["unsigned-64-boundary"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "u64", "decimal": "18446744073709551615" },
+      "envelopeKind": "value",
+      "expectedHex": "5044525601010000000d0400000008ffffffffffffffff"
+    },
+    {
+      "id": "arbitrary-positive-two-to-80",
+      "members": ["arbitrary-width-integer"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "integer", "decimal": "1208925819614629174706176" },
+      "envelopeKind": "value",
+      "expectedHex": "50445256010100000011050000000c000100000000000000000000"
+    },
+    {
+      "id": "arbitrary-negative-two-to-80",
+      "members": ["arbitrary-width-integer"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "integer", "decimal": "-1208925819614629174706176" },
+      "envelopeKind": "value",
+      "expectedHex": "50445256010100000011050000000c010100000000000000000000"
+    },
+    {
+      "id": "finite-float-one-point-five",
+      "members": ["finite-float"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "float64", "decimal": "1.5" },
+      "envelopeKind": "value",
+      "expectedHex": "5044525601010000000d06000000083ff8000000000000"
+    },
+    {
+      "id": "text-with-nul-and-u00ff",
+      "members": ["fatal-utf8-text"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "text", "value": "A\u0000ÿ" },
+      "envelopeKind": "value",
+      "expectedHex": "5044525601010000000907000000044100c3bf"
+    },
+    {
+      "id": "bytes-with-nul-and-ff",
+      "members": ["binary-safe-bytes"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "bytes", "hex": "00ff" },
+      "envelopeKind": "value",
+      "expectedHex": "50445256010100000007080000000200ff"
+    },
+    {
+      "id": "array-of-booleans",
+      "members": ["array"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "array", "items": [false, true] },
+      "envelopeKind": "value",
+      "expectedHex": "50445256010100000013090000000e0000000201000000000200000000"
+    },
+    {
+      "id": "record-utf8-byte-order",
+      "members": ["canonical-record"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": {
+        "kind": "record",
+        "entriesInCanonicalOrder": [
+          ["", false],
+          ["𐀀", true]
+        ]
+      },
+      "envelopeKind": "value",
+      "expectedHex": "504452560101000000220a0000001d0000000200000003ee8080010000000000000004f09080800200000000"
+    },
+    {
+      "id": "plain-object-derived-utf8-byte-order",
+      "members": ["canonical-record"],
+      "directions": ["host-to-vm"],
+      "semantic": {
+        "𐀀": false,
+        "": true
+      },
+      "envelopeKind": "value",
+      "expectedHex": "504452560101000000220a0000001d0000000200000003ee8080020000000000000004f09080800100000000"
+    },
+    {
+      "id": "tagged-ok-variant",
+      "members": ["tagged-variant"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": { "kind": "variant", "tag": "ok", "value": true },
+      "envelopeKind": "value",
+      "expectedHex": "504452560101000000100b0000000b000000026f6b0200000000"
+    },
+    {
+      "id": "null",
+      "members": ["null"],
+      "directions": ["host-to-vm", "vm-to-host"],
+      "semantic": null,
+      "envelopeKind": "value",
+      "expectedHex": "504452560101000000050c00000000"
+    }
+  ],
+  "envelopeCases": [
+    {
+      "id": "admission-graph-and-export-set",
+      "members": ["graph-function-separation", "export-binding"],
+      "direction": "vm-to-host",
+      "semantic": {
+        "kind": "admission-result",
+        "graph": { "module": "demo" },
+        "exportsInCanonicalOrder": ["derive", "transform"]
+      },
+      "envelopeKind": "admission-result",
+      "expectedHex": "504452560102000000370a0000001700000001000000066d6f64756c65070000000464656d6f0000000200000006646572697665000000097472616e73666f726d"
+    },
+    {
+      "id": "admission-export-utf8-byte-order",
+      "members": ["export-binding"],
+      "direction": "host-to-vm",
+      "semantic": {
+        "kind": "admission-result",
+        "graph": {},
+        "exportsInCanonicalOrder": ["", "𐀀"]
+      },
+      "envelopeKind": "admission-result",
+      "expectedHex": "5044525601020000001c0a00000004000000000000000200000003ee808000000004f0908080"
+    },
+    {
+      "id": "invoke-named-export",
+      "members": ["export-binding"],
+      "direction": "host-to-vm",
+      "semantic": { "kind": "invoke", "exportName": "derive", "input": {} },
+      "envelopeKind": "invoke",
+      "expectedHex": "50445256010300000013000000066465726976650a0000000400000000"
+    },
+    {
+      "id": "named-program-failure",
+      "members": ["named-program-failure"],
+      "direction": "vm-to-host",
+      "semantic": { "kind": "program-failure", "name": "domain-error", "details": "bad" },
+      "envelopeKind": "program-failure",
+      "expectedHex": "504452560104000000180000000c646f6d61696e2d6572726f720700000003626164"
+    }
+  ],
+  "malformedFrames": [
+    {
+      "id": "reject-null-with-content",
+      "members": ["null"],
+      "direction": "vm-to-host",
+      "envelopeKind": "value",
+      "expectedHex": "504452560101000000060c0000000100",
+      "expectedDiagnostic": "value-abi.corpus.frame-malformed"
+    }
+  ],
+  "rejections": [
+    {
+      "id": "reject-nan",
+      "members": ["non-finite-rejection"],
+      "direction": "vm-to-host",
+      "semantic": { "kind": "float64", "value": "NaN" },
+      "reason": "non-finite float has no ABI encoding"
+    },
+    {
+      "id": "reject-positive-infinity",
+      "members": ["non-finite-rejection"],
+      "direction": "vm-to-host",
+      "semantic": { "kind": "float64", "value": "+Infinity" },
+      "reason": "non-finite float has no ABI encoding"
+    },
+    {
+      "id": "reject-negative-infinity",
+      "members": ["non-finite-rejection"],
+      "direction": "vm-to-host",
+      "semantic": { "kind": "float64", "value": "-Infinity" },
+      "reason": "non-finite float has no ABI encoding"
+    },
+    {
+      "id": "reject-negative-zero",
+      "members": ["negative-zero-rejection"],
+      "direction": "vm-to-host",
+      "semantic": { "kind": "float64", "value": "-0" },
+      "reason": "negative zero has no public value identity"
+    },
+    {
+      "id": "reject-lone-surrogate",
+      "members": ["lone-surrogate-rejection"],
+      "direction": "host-to-vm",
+      "semantic": { "kind": "text", "value": "\ud800" },
+      "reason": "text requires fatal UTF-8 over Unicode scalar values"
+    },
+    {
+      "id": "reject-function-in-admission-graph",
+      "members": ["graph-function-separation"],
+      "direction": "vm-to-host",
+      "semantic": { "kind": "forbidden-crossing", "valueKind": "function", "location": "admission.graph" },
+      "reason": "functions stay in the VM and only export names cross"
+    },
+    {
+      "id": "reject-javascript-object-reference",
+      "members": ["host-object-rejection"],
+      "direction": "host-to-vm",
+      "semantic": { "kind": "forbidden-crossing", "valueKind": "javascript-object-reference" },
+      "reason": "records are encoded data; host objects never cross directly"
+    },
+    {
+      "id": "reject-pointer",
+      "members": ["pointer-rejection"],
+      "direction": "vm-to-host",
+      "semantic": { "kind": "forbidden-crossing", "valueKind": "pointer" },
+      "reason": "host and VM pointers never cross directly"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": false,
+    "baseUrl": ".",
+    "paths": {
+      "@protodriver/contracts": ["../../packages/contracts/src/index.ts"],
+      "@protodriver/control-model": ["../../packages/control-model/src/index.ts"],
+      "@protodriver/generated-web": ["../../packages/generated-web/src/index.ts"],
+      "@protodriver/core/*": ["../../packages/core/src/*.ts"],
+      "@protodriver/lua-vm": ["../../packages/lua-vm/src/index.ts"],
+      "@protodriver/transfer-runtime/*": ["../../packages/transfer-runtime/src/*.ts"],
+      "@protodriver/transport-browser-serial": ["../../packages/transport-browser-serial/src/index.ts"],
+      "@protodriver/transport-browser-usb": ["../../packages/transport-browser-usb/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}

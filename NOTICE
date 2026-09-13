@@ -1,0 +1,21 @@
+Protodriver
+Copyright 2026 thirdnerd
+
+This product includes software developed for the Protodriver project.
+
+Third-party components redistributed in the product archives:
+
+  Node.js — MIT. The runtime binary in bin/, with its licence at
+  licenses/node-LICENSE.
+
+  Lua 5.5.1 — MIT, Copyright (C) 1994-2025 Lua.org, PUC-Rio. Compiled to
+  WebAssembly and shipped as app/packages/lua-vm/artifacts/*.wasm, with its
+  licence at licenses/lua-LICENSE.
+
+  serialport, usb, ioctl and their dependencies — MIT. Each retains its own
+  LICENSE file inside app/node_modules/.
+
+Device modules under corpus/ and examples/ are part of this project and
+carry the same licence. They encode protocol facts observed from the named
+devices; the device names and trademarks belong to their owners and are used
+only to say which hardware a module speaks to.

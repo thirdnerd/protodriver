@@ -1,0 +1,4 @@
+{"kind":"header","formatVersion":1,"captureId":"device-1-stale-tail-regression","startedAtUnixMs":0,"timebase":"monotonic-us","clockResolutionUs":1,"logicalDevice":"baofeng.gm15-pro","host":{"platform":"node","appVersion":"phase-1-regression"},"completeness":"recording"}
+{"seq":1,"tUs":1000,"kind":"tx-requested","conn":1,"ch":"main","data":"UFNFQVJDSA=="}
+{"seq":2,"tUs":21000,"kind":"rx-delivered","conn":1,"ch":"main","data":"V0DnEUAEQP4="}
+{"kind":"footer","endedAtUnixMs":21,"completeness":"complete","replayability":"byte-exact-replayable","recordCount":2,"gapCount":0,"connections":1,"rxBytes":8,"txBytes":7}

@@ -1,0 +1,27 @@
+{
+  "name": "@protodriver/transfer-runtime",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./transfer": "./src/transfer.ts",
+    "./transfer-digests": "./src/transfer-digests.ts",
+    "./transfer-checkpoint": "./src/transfer-checkpoint.ts"
+  },
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "verify": "npm run check && npm test"
+  },
+  "dependencies": {
+    "@protodriver/contracts": "file:../contracts"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3"
+  }
+}

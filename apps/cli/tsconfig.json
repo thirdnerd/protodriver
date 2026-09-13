@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": false,
+    "baseUrl": ".",
+    "paths": {
+      "@protodriver/contracts": ["../../packages/contracts/src/index.ts"],
+      "@protodriver/control-model": ["../../packages/control-model/src/index.ts"],
+      "@protodriver/generated-cli": ["../../packages/generated-cli/src/index.ts"],
+      "@protodriver/generated-cli/*": ["../../packages/generated-cli/src/*.ts"],
+      "@protodriver/core": ["../../packages/core/src/index.ts"],
+      "@protodriver/core/*": ["../../packages/core/src/*.ts"],
+      "@protodriver/lua-vm": ["../../packages/lua-vm/src/index.ts"],
+      "@protodriver/transfer-runtime/*": ["../../packages/transfer-runtime/src/*.ts"],
+      "@protodriver/transport-node-serial": ["../../packages/transport-node-serial/src/index.ts"],
+      "@protodriver/transport-node-usb": ["../../packages/transport-node-usb/src/index.ts"]
+    },
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

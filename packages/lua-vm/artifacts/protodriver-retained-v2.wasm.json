@@ -1,0 +1,28 @@
+{
+  "sha256": "f0646d258acf98a02eabf678aea7ae90f118fca6e1014515ffbdb95987c54e37",
+  "bytes": 380227,
+  "compiler": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 6.0.8 (aeb67926e7de656da38bc807d83050af93578758)",
+  "flags": [
+    "-O2",
+    "-flto",
+    "-DNDEBUG",
+    "-ULUA_32BITS",
+    "-ULUA_USE_C89",
+    "-Dluai_makeseed()=0x50445256u",
+    "-sSTANDALONE_WASM=1",
+    "-sFILESYSTEM=0",
+    "-sMALLOC=emmalloc",
+    "-sALLOW_MEMORY_GROWTH=1",
+    "-sINITIAL_MEMORY=16777216",
+    "-sSTACK_SIZE=65536",
+    "-sASSERTIONS=0",
+    "-sSUPPORT_LONGJMP=wasm",
+    "-sERROR_ON_UNDEFINED_SYMBOLS=1",
+    "--no-entry",
+    "-sEXPORTED_FUNCTIONS=[\"_malloc\",\"_free\"]"
+  ],
+  "bridgeSha256": "f0a59a3af08a942f901ba2dae0dfd6ccf1659280689b5f7d1b8661a4a49fc765",
+  "accountHeaderSha256": "7bf21fa802e9da0c900b567aa255076b8e226dbd656bfee5a35c36eaf8386064",
+  "baseBridgeSha256": "4eb42b632206004d98cc11b9309993deedc466a5bc3de0c5cca401eb39cb7529",
+  "luaSourceSetSha256": "c0a63d4d1ac35dad034a552385c14ce98823ad0a7cd250dded744ff0207162c1"
+}

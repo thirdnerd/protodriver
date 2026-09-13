@@ -1,0 +1,25 @@
+{
+  "name": "@protodriver/lua-vm",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./retained": "./src/retained.ts"
+  },
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@protodriver/contracts": "file:../contracts"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3"
+  }
+}

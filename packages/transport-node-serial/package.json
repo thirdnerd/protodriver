@@ -1,0 +1,29 @@
+{
+  "name": "@protodriver/transport-node-serial",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "verify": "npm run check && npm test"
+  },
+  "dependencies": {
+    "@protodriver/contracts": "file:../contracts",
+    "@protodriver/core": "file:../core",
+    "serialport": "13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "5.6.3"
+  },
+  "optionalDependencies": {
+    "ioctl": "2.0.2"
+  }
+}

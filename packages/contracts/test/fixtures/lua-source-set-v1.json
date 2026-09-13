@@ -1,0 +1,15 @@
+{
+  "corpusId": "pdrv-lua-source-set-v1-hand-authored-anchor",
+  "members": [
+    {
+      "logicalName": "lib/helper.lua",
+      "sourceHex": "72657475726e20320a"
+    },
+    {
+      "logicalName": "device.lua",
+      "sourceHex": "72657475726e20310a"
+    }
+  ],
+  "expectedCanonicalFrameHex": "504452562d4c55412d534f555243452d5345540001000000020000000a6465766963652e6c75610000000972657475726e20310a0000000e6c69622f68656c7065722e6c75610000000972657475726e20320a",
+  "expectedSha256": "81f7c1cf89bfb172a240695ac6a1494d67dbcfc1c8f72ec2a51a67926856059c"
+}

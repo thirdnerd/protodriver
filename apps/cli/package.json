@@ -1,0 +1,36 @@
+{
+  "name": "@protodriver/cli",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pdr": "src/pdr.ts"
+  },
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "verify": "npm run check && npm test"
+  },
+  "dependencies": {
+    "@protodriver/contracts": "file:../../packages/contracts",
+    "@protodriver/control-model": "file:../../packages/control-model",
+    "@protodriver/generated-cli": "file:../../packages/generated-cli",
+    "@protodriver/core": "file:../../packages/core",
+    "@protodriver/lua-vm": "file:../../packages/lua-vm",
+    "@protodriver/transfer-runtime": "file:../../packages/transfer-runtime",
+    "@protodriver/transport-node-serial": "file:../../packages/transport-node-serial",
+    "@protodriver/transport-node-usb": "file:../../packages/transport-node-usb",
+    "serialport": "13.0.0",
+    "usb": "2.15.0"
+  },
+  "devDependencies": {
+    "@protodriver/transport-mock": "file:../../packages/transport-mock",
+    "@types/node": "22.10.2",
+    "typescript": "5.6.3"
+  }
+}

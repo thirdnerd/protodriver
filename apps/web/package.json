@@ -1,0 +1,31 @@
+{
+  "name": "@protodriver/web",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@10.9.0",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "tsc --noEmit",
+    "lint:offline": "node ../../tools/check-browser-offline.mjs",
+    "test": "node --test test/*.test.mjs",
+    "serve": "node serve.mjs",
+    "verify": "npm run check && npm test && npm run lint:offline && npm run build"
+  },
+  "dependencies": {
+    "@protodriver/contracts": "file:../../packages/contracts",
+    "@protodriver/control-model": "file:../../packages/control-model",
+    "@protodriver/generated-web": "file:../../packages/generated-web",
+    "@protodriver/core": "file:../../packages/core",
+    "@protodriver/lua-vm": "file:../../packages/lua-vm",
+    "@protodriver/transfer-runtime": "file:../../packages/transfer-runtime",
+    "@protodriver/transport-browser-serial": "file:../../packages/transport-browser-serial",
+    "@protodriver/transport-browser-usb": "file:../../packages/transport-browser-usb"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "esbuild": "0.28.2",
+    "typescript": "5.6.3"
+  }
+}

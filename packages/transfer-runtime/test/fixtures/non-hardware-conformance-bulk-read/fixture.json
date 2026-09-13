@@ -1,0 +1,31 @@
+{
+  "formatVersion": 1,
+  "fixtureId": "non-hardware-conformance-bulk-read",
+  "cases": [
+    "bounded device-to-host read with per-action settlement and reported target digest"
+  ],
+  "source": {
+    "artifact": "device-3-stage5-bulk.log",
+    "sha256": "b36dca789499ef4f1fa59a771a079e5b13eca611fd531bfdf2342d3f02aa282e",
+    "range": {
+      "offsetBytes": 110490,
+      "lengthBytes": 7533766,
+      "firstRecord": "1703916504482 RX81",
+      "lastRecord": "1703928807331 BULK_READ_TARGET_CONFIRMED"
+    }
+  },
+  "excerpt": {
+    "file": "source.excerpt",
+    "lengthBytes": 7533766,
+    "sha256": "b4853d563197d3a12c87cb499f5349e3cbd33e19782faac5eca7be75438adff7"
+  },
+  "projection": {
+    "kind": "device-3-stage5-bulk-read-log-v1",
+    "direction": "deviceToHost",
+    "requestRecord": "TX01 BULK_READ",
+    "deliveryRecord": "RX81",
+    "settlementRecord": "DECODE opcode=0x35 status=0x00:OK",
+    "octetOrder": "as-recorded",
+    "deliveryBoundaries": "preserved-in-source-records"
+  }
+}

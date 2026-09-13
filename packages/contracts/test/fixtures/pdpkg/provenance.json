@@ -1,0 +1,50 @@
+{
+  "anchors": [
+    {
+      "file": "python-zipfile-stored.zip",
+      "producer": "Python zipfile ZIP_STORED",
+      "producerVersion": "Python 3.14.4",
+      "sha256": "67151374a70004e19b9674b7cff566bb527e9d3476ef06847caffe09adb111c0",
+      "memberSha256": {
+        "pdpkg.json": "edc808c3f77e54e892f94c938bb5dd6ea3d115018da4ae80b2b243ae3506e2fe",
+        "device.lua": "8214525ff16d57e65296d7a91c5cf7bb716feb3507a4102e3651f78a98aab45a",
+        "helper.lua": "0805bfdc02e872ed322a4a4e440ae985f3a4335f4dd59f3d373dfaf2a68a4a3c"
+      }
+    },
+    {
+      "file": "python-zipfile-deflated.zip",
+      "producer": "Python zipfile ZIP_DEFLATED",
+      "producerVersion": "Python 3.14.4",
+      "sha256": "f44d570b14bcd591d8291ec58cceb6937de9746aac3688f4bc42cff4eaf7a792",
+      "memberSha256": {
+        "pdpkg.json": "edc808c3f77e54e892f94c938bb5dd6ea3d115018da4ae80b2b243ae3506e2fe",
+        "device.lua": "8214525ff16d57e65296d7a91c5cf7bb716feb3507a4102e3651f78a98aab45a",
+        "helper.lua": "0805bfdc02e872ed322a4a4e440ae985f3a4335f4dd59f3d373dfaf2a68a4a3c"
+      }
+    },
+    {
+      "file": "infozip-3.0.zip",
+      "producer": "Info-ZIP zip",
+      "producerVersion": "Zip 3.0 (July 5th 2008)",
+      "sha256": "537ce55f7e733637119e49f3687d80e6586665d86014a10f933c53ae0add40c1",
+      "memberSha256": {
+        "pdpkg.json": "c4ac7007323375bef9c955abd383bc3b50a29761eb6f252e7aa40eb53ee028ca",
+        "device.lua": "8214525ff16d57e65296d7a91c5cf7bb716feb3507a4102e3651f78a98aab45a",
+        "helper.lua": "0805bfdc02e872ed322a4a4e440ae985f3a4335f4dd59f3d373dfaf2a68a4a3c"
+      }
+    },
+    {
+      "file": "windows-powershell-5.1.zip",
+      "producer": "Windows PowerShell Compress-Archive",
+      "producerVersion": "PowerShell 5.1.26100.9168 (Desktop), Compress-Archive module 1.0.1.0",
+      "host": "Microsoft Windows NT 10.0.26200.0",
+      "productionNote": "Compress-Archive emitted this .zip directly; the reader receives bytes and has no filename or extension channel.",
+      "sha256": "3ce45f7a36311c36feea6a6686bddefa9881c46f135d04425f68e0a9c4625e11",
+      "memberSha256": {
+        "device.lua": "0195cd312c8bc4ea899c039e80a6f011bd980471e353891aa8a6285f42280d54",
+        "graph.lua": "50e35f6e2cfb91b428dc5692cdab450cb49bca8d35e7812462759ca2b7a7d86a",
+        "pdpkg.json": "edc808c3f77e54e892f94c938bb5dd6ea3d115018da4ae80b2b243ae3506e2fe"
+      }
+    }
+  ]
+}

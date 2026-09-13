@@ -1,0 +1,128 @@
+$ node apps/cli/src/pdr.ts pack examples/demo-thermostat/step-1 declaration.pdpkg
+declaration.pdpkg (2241 bytes; source-set sha256:88ab2548e931776c1d3e2c33ec3b86777e785edc4d2503e5abdb45130324b393)
+
+$ node apps/cli/src/pdr.ts run declaration.pdpkg --help
+DemoBench thermostat (demobench-thermostat, device/v2)
+
+Modes:
+  thermostat                   mode thermostat
+
+Tasks:
+  read_status: Read status [read-only; safe-to-repeat; value]
+  set_target: Set target [destructive; not-repeatable; value]
+
+Transport requests declared; acquisition remains subject to host approval.
+Profile serial: serial; modes thermostat
+
+$ node apps/cli/src/pdr.ts inspect declaration.pdpkg
+# Static generated interface
+
+DemoBench thermostat (demobench-thermostat, device/v2)
+
+Modes:
+  thermostat                   mode thermostat
+
+Tasks:
+  read_status: Read status [read-only; safe-to-repeat; value]
+  set_target: Set target [destructive; not-repeatable; value]
+
+Transport requests declared; acquisition remains subject to host approval.
+Profile serial: serial; modes thermostat
+
+# Executable internals
+
+Execution contract: authored-v2
+Source-set SHA-256: 88ab2548e931776c1d3e2c33ec3b86777e785edc4d2503e5abdb45130324b393
+Execution identity: 112ad9f295efb0933268c44e88bfe1ed7531ceaf066eb1f592477b6e9fcbbaad
+Lua members: device.lua
+Analysis: opaque authored Lua; bodies and dynamic control flow were not statically inspected.
+Inspection performed effect-free admission only; session entry, acquisition, and application I/O did not run.
+
+$ node apps/cli/src/pdr.ts pack examples/demo-thermostat/step-2 entry.pdpkg
+entry.pdpkg (3305 bytes; source-set sha256:c69087f6d1ffa1200f454c842a8adaf069f3c651709185d92f5050dd11fcefd6)
+
+runPdr read_status [step-2: identified, operation unfinished]
+failure: demo-thermostat.not-implemented
+wrote: "ID?\r"
+
+runPdr read_status [step-2: wrong identity]
+failure: demo-thermostat.identity-mismatch
+wrote: "ID?\r"
+
+$ node apps/cli/src/pdr.ts pack examples/demo-thermostat/step-3 status.pdpkg
+status.pdpkg (4353 bytes; source-set sha256:06a6ca4f69014f90c306b1ed29829644b0b374d61a172878397bceb8af8ef5c9)
+
+runPdr read_status [step-3: fragmented]
+result: {"heater":"on","sequence":1,"target_centi_c":2200,"temperature_centi_c":2150}
+wrote: "ID?\r", "STATUS?\r"
+
+$ node apps/cli/src/pdr.ts pack examples/demo-thermostat thermostat.pdpkg
+thermostat.pdpkg (5650 bytes; source-set sha256:d984cae1a1589dd22f08e90834c1c92f08110a941d30e938fc791675cd7f31d0)
+
+$ node apps/cli/src/pdr.ts run thermostat.pdpkg set_target --help
+DemoBench thermostat — Set target
+
+Change the requested temperature; do not retry after uncertainty.
+
+Usage: pdr run <package> [--mode id] [--profile id] [--candidate id] [--expect-source-set-sha256 hex] [--json] set_target [flags]
+
+Risk: destructive
+Repeatability: not-repeatable
+
+Inputs:
+  target_centi_c: target_centi_c
+
+Result:
+  value
+    record
+      target_centi_c (target_centi_c)
+        integer 500..3500
+
+JSON:
+  --json emits one fixed operation envelope; result contains every declared field.
+
+runPdr read_status [normal]
+result: {"heater":"on","sequence":1,"target_centi_c":2200,"temperature_centi_c":2150}
+wrote: "ID?\r", "STATUS?\r"
+
+runPdr set_target --target_centi_c 2300 [normal]
+result: {"target_centi_c":2300}
+wrote: "ID?\r", "SET 2300\r"
+
+runPdr read_status [normal]
+result: {"heater":"on","sequence":2,"target_centi_c":2300,"temperature_centi_c":2150}
+wrote: "ID?\r", "STATUS?\r"
+
+runPdr read_status [fragmented]
+result: {"heater":"on","sequence":1,"target_centi_c":2200,"temperature_centi_c":2150}
+wrote: "ID?\r", "STATUS?\r"
+
+runPdr read_status [wrong-identity]
+failure: demo-thermostat.identity-mismatch
+wrote: "ID?\r"
+
+runPdr read_status [malformed]
+failure: demo-thermostat.malformed-status
+wrote: "ID?\r", "STATUS?\r"
+
+runPdr read_status [overlong]
+failure: demo-thermostat.line-too-long
+wrote: "ID?\r", "STATUS?\r"
+
+runPdr read_status [silent]
+failure: demo-thermostat.response-timeout
+wrote: "ID?\r", "STATUS?\r"
+
+runPdr set_target --target_centi_c 2300 [unexpected-range-refusal]
+failure: demo-thermostat.range-refused
+wrote: "ID?\r", "SET 2300\r"
+
+runPdr set_target --target_centi_c 4000 [argument bound]
+failure: Error: authored.value.invalid: value outside declared range
+wrote: "ID?\r"
+
+$ simulator raw SET 4000\r
+ERR RANGE
+
+$ simulator raw WHAT?\r
+(no reply)
