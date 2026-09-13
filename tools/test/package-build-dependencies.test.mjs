@@ -7,11 +7,34 @@ import { fileURLToPath } from "node:url";
 
 import {
   PACKAGE_BUILD_WORKSPACES,
+  bundledNpmCli,
   installPackageBuildDependencies,
+  npmInvocation,
   packageBuildDependencyPlan,
 } from "../install-package-build-dependencies.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+test("Windows npm invokes its JavaScript CLI through Node without a batch shell", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "protodriver-npm-layout-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const executable = join(root, "node.exe");
+  const npmRoot = join(root, "node_modules", "npm");
+  const cli = join(npmRoot, "bin", "npm-cli.js");
+  await mkdir(dirname(cli), { recursive: true });
+  await writeFile(join(npmRoot, "package.json"), '{"name":"npm","bin":{"npm":"bin/npm-cli.js"}}\n');
+  await writeFile(cli, "// fixture\n");
+  assert.equal(await bundledNpmCli(executable), cli);
+  assert.deepEqual(npmInvocation({ platform: "win32", executable, npmCli: cli }), {
+    command: executable,
+    prefix: [cli],
+  });
+  assert.deepEqual(npmInvocation({ platform: "linux", executable }), { command: "npm", prefix: [] });
+  assert.throws(() => npmInvocation({ platform: "win32", executable }), /npm-cli-required/u);
+  await assert.rejects(bundledNpmCli(join(root, "nested", "node.exe")), /not beside/u);
+  await rm(cli);
+  await assert.rejects(bundledNpmCli(executable), /npm-cli-missing/u);
+});
 
 test("the package-build recipe covers the complete two-host workspace closure", async () => {
   assert.equal(packageBuildDependencyPlan().target, `${process.platform}-${process.arch}`);

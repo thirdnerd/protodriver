@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "../packages/generated-cli/src/node-entry-point.ts";
 import { hostPackageTarget, packageTarget } from "./package/targets.mjs";
+import { isPathWithin } from "./path-containment.mjs";
 
 const defaultSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -60,7 +62,8 @@ export async function installPackageBuildDependencies({
   const sourceRoot = resolve(sourceDirectory);
   const plan = packageBuildDependencyPlan(target);
   await verifyWorkspaceInputs(sourceRoot, plan.workspaces);
-  const npm = npmInvocation(npmCli);
+  const cliPath = npmCli ?? (process.platform === "win32" ? await bundledNpmCli(process.execPath) : undefined);
+  const npm = npmInvocation({ npmCli: cliPath });
   const version = (await captureNpm(npm, ["--version"], sourceRoot)).trim();
   const major = Number.parseInt(version.split(".")[0], 10);
   if (!Number.isSafeInteger(major)) {
@@ -127,14 +130,52 @@ async function verifyWorkspaceInputs(sourceRoot, workspaces) {
   }
 }
 
-function npmInvocation(npmCli) {
+/** The choice of executable never involves a command interpreter. */
+export function npmInvocation({
+  platform = process.platform,
+  executable = process.execPath,
+  npmCli,
+} = {}) {
   if (npmCli !== undefined) {
-    return Object.freeze({ command: process.execPath, prefix: Object.freeze([resolve(npmCli)]) });
+    return Object.freeze({ command: executable, prefix: Object.freeze([resolve(npmCli)]) });
+  }
+  if (platform === "win32") {
+    throw new Error("package-build-dependencies.npm-cli-required: Windows needs an npm CLI JavaScript file; pass --npm-cli FILE");
   }
   return Object.freeze({
-    command: process.platform === "win32" ? "npm.cmd" : "npm",
+    command: "npm",
     prefix: Object.freeze([]),
   });
+}
+
+/** Resolve npm's declared bin from the npm package installed beside Node. */
+export async function bundledNpmCli(executable = process.execPath) {
+  const nodeDirectory = dirname(resolve(executable));
+  let manifestPath;
+  try {
+    manifestPath = createRequire(join(nodeDirectory, "protodriver-npm-resolver.cjs"))
+      .resolve("npm/package.json");
+  } catch (cause) {
+    throw new Error(
+      `package-build-dependencies.npm-cli-missing: npm is not resolvable beside ${executable}; pass --npm-cli FILE`,
+      { cause },
+    );
+  }
+  if (!isPathWithin(nodeDirectory, manifestPath)) {
+    throw new Error(
+      `package-build-dependencies.npm-cli-missing: resolved npm is not beside ${executable}; pass --npm-cli FILE`,
+    );
+  }
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const bin = manifest.bin?.npm;
+  if (manifest.name !== "npm" || typeof bin !== "string" || !/^bin\/[a-z0-9-]+\.js$/u.test(bin)) {
+    throw new Error(`package-build-dependencies.npm-cli-invalid: ${manifestPath} does not declare an npm JavaScript bin`);
+  }
+  const cliPath = resolve(dirname(manifestPath), bin);
+  if (!(await stat(cliPath).catch(() => undefined))?.isFile()) {
+    throw new Error(`package-build-dependencies.npm-cli-missing: ${cliPath} does not exist; pass --npm-cli FILE`);
+  }
+  return cliPath;
 }
 
 async function runNpm(npm, arguments_, cwd) {

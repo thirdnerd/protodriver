@@ -42,6 +42,10 @@ jobs:
       - name: Install Linux package prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y bubblewrap busybox-static libudev-dev
+      - name: Verify Linux isolated smoke can run
+        id: linux_sandbox
+        if: runner.os == 'Linux'
+        run: node tools/prepare-linux-sandbox.mjs
       - name: Build and smoke dispatch package
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -57,6 +61,9 @@ jobs:
         env:
           PACKAGE_TARGET: ${{ matrix.target }}
           RELEASE_TAG: ${{ github.ref_name }}
+      - name: Restore Linux AppArmor restriction
+        if: always() && runner.os == 'Linux' && steps.linux_sandbox.outputs.restore_apparmor == 'true'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
       - uses: actions/attest-build-provenance@v4
         if: github.event_name == 'push'
         with:

@@ -31,6 +31,13 @@ Device 2 source, reaches the expected no-candidate operation result, and loads
 the serialport, USB, and ioctl boundaries. It does not open hardware or run a
 browser.
 
+Hosted Linux CI first probes Bubblewrap with `--unshare-all`, including the
+network namespace. If the probe fails while Ubuntu's AppArmor user-namespace
+restriction is enabled, the job temporarily disables that restriction, probes
+again, and restores it after the build. If the second probe still fails, the
+job fails with the namespace error instead of skipping or weakening the smoke.
+The smoke itself always runs with the same isolation flags.
+
 ## Linux arm64 container alternative
 
 The ordinary arm64 path must run on an arm64 host. If that host cannot provide
