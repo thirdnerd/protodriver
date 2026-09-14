@@ -1,20 +1,33 @@
 # Protodriver
 
-A browser app and a CLI sharing one runtime, talking to hardware over serial
-and USB, driven by a **self-contained device module rather than per-device code
-built into either host**. A module is Lua: it declares what the device is and
-how to talk to it, and the shared runtime — not the module — owns device I/O.
-
-Point it at a device it has never seen, and the module tells it what to do.
+A browser app and CLI for running Lua device modules over serial or USB. Each
+module describes its device and operations; the shared runtime handles device
+I/O, so adding a device does not require changing either host.
 
 ## Getting `pdr`
 
-`pdr` is not in this checkout and does not install from npm. It ships as one
-self-contained release archive carrying its own Node runtime, native bindings,
-Lua VM, author documentation, blank starter, and worked modules, so the machine
-that runs it needs no Node, npm, compiler or package manager.
+Download the prebuilt archive for your machine from the [Releases
+page](https://github.com/thirdnerd/protodriver/releases) when a release is
+published. If no release is listed yet, you can build from source below. The
+v0.1.0 release archives are named:
 
-Build one for the current machine with one command:
+| Machine | Archive |
+| --- | --- |
+| Linux x64 | `protodriver-0.1.0-linux-x64.tar.gz` |
+| Linux arm64 | `protodriver-0.1.0-linux-arm64.tar.gz` |
+| macOS Apple Silicon | `protodriver-0.1.0-darwin-arm64.tar.gz` |
+| macOS Intel | `protodriver-0.1.0-darwin-x64.tar.gz` |
+| Windows x64 | `protodriver-0.1.0-win32-x64.zip` |
+
+Each archive includes the Node runtime, native bindings, Lua VM, author guide,
+blank starter, and worked modules. The receiving machine needs no Node, npm,
+or compiler. Download `SHA256SUMS` with the archive to check its digest; each
+archive also has a build-provenance attestation. After extraction, run
+`./bin/pdr --version` (Windows: `.\bin\pdr.cmd --version`) from the extracted
+directory to see the release version and source commit. Its README has a
+hardware-free first run.
+
+To build your own archive from a repository checkout, run:
 
 ```sh
 node tools/build-package.mjs
@@ -22,13 +35,14 @@ node tools/build-package.mjs
 
 The [package build guide](docs/building.md) covers prerequisites and the short
 [Linux](docs/linux-x64-package.md), [macOS](docs/macos-package.md), and
-[Windows](docs/windows-x64-package.md) exception guides. Everything below
-assumes `pdr` from the resulting archive is on your PATH.
+[Windows](docs/windows-x64-package.md) exception guides. `pdr` is not installed
+from this checkout or npm; the commands below assume you have added an
+extracted archive's `bin/` directory to your PATH.
 
 ## Running a module
 
-A module source is a directory of Lua headed by `device.lua`. Package it, then
-ask it what it can do:
+A module source is a directory of Lua headed by `device.lua`. From this
+repository's root, package a sample and ask it what it can do:
 
 ```bash
 pdr pack corpus/device-1 device-1.pdpkg
@@ -41,6 +55,9 @@ None of those four touches hardware. Packaging records the source set without
 executing it. Generated help evaluates and admits the package but acquires
 nothing. `inspect` reports the static interface and the executable identity
 without running entry or any operation.
+
+If you only have the release archive, use `examples/device-1` in place of
+`corpus/device-1`; the archive README also shows a blank-starter first run.
 
 Running an actual operation is different: it begins acquisition and may perform
 entry writes after selecting a device.
@@ -60,26 +77,22 @@ committed under `corpus/`.
 
 ## Writing your own
 
-The tutorial is included in every release archive beside a blank starter,
-progressive thermostat walkthrough, and six complete worked modules. There is
-no second author artifact and no repository checkout is needed after extraction.
-[Build the release](docs/building.md) and hand over that one archive.
+The release archive includes the tutorial, blank starter, progressive
+thermostat walkthrough, and six complete worked modules. You can follow them
+from the extracted directory without a repository checkout.
 
 Start with [Write a device module](docs/author-tutorial.md), which packages,
 runs help and inspects without any hardware attached. Then read its [TI-84 Plus
 CE screenshot example](examples/ti84-plus-ce/README.md), which walks
 through a finished module for a real calculator.
 
-The [DemoBench thermostat
+[The DemoBench thermostat
 walkthrough](examples/demo-thermostat/README.md) builds a fictional serial
-driver in stages and runs it against an independent, host-injected simulator.
-Its simulator runner is project-side transcript-generation infrastructure, not
-a release transport or a `pdr-demo` executable; the complete checked walkthrough
-ships in the archive.
+driver in stages. Its included transcript lets you study the results without
+thermostat hardware.
 
-[`examples/start/`](examples/start) is a starting
-skeleton. It admits and packages, and its one operation deliberately fails —
-there are no invented device facts in it to copy by mistake.
+[`examples/start/`](examples/start) is a starting skeleton. It packages and
+admits, but its operation cannot run until you fill in facts about your device.
 
 When an exact declaration or effect shape is not in an example, the
 [contract-2 author reference](docs/declaration-reference.md) has it.
@@ -89,18 +102,26 @@ thing that stops a device from appearing.
 
 ## The browser
 
-`apps/web` is the same runtime in a browser. Build it with `npm run build` and
-serve it with `npm run serve`. It imports `.pdpkg` bytes, re-verifies packages
-it has stored, and runs admitted contract-2 modules.
+`apps/web` uses the same runtime in a browser. From a repository checkout,
+build and serve it from that directory:
+
+```bash
+cd apps/web
+npm ci
+npm run build
+npm run serve
+```
+
+It imports `.pdpkg` files, re-verifies stored packages, and runs admitted
+contract-2 modules.
 
 WebUSB and Web Serial depend on the browser supporting them and on the operator
 granting permission per device.
 
-The app ships with no external network dependency. On each page load it checks
-for a same-origin `catalog.json`; a missing catalog is silent. A deployed
-catalog can list `.pdpkg` files at any URL, including another origin. Choosing
-one fetches and admits it like a package imported from disk, then remembers it
-in this browser.
+The page itself needs no third-party service. On each load it checks for a
+same-origin `catalog.json`; no catalog is required. A deployed catalog can list
+`.pdpkg` files at any URL, including another origin. Choosing one fetches and
+admits it like a package imported from disk, then remembers it in this browser.
 
 To offer packages, put `catalog.json` beside the deployed `index.html`:
 
@@ -113,12 +134,14 @@ must allow the browser to read its response.
 
 ## Working on protodriver itself
 
-Install locked workspace dependencies once after cloning (or let the package
-build above install them). The test loop then runs with one command:
+After cloning, install the locked workspace dependencies once (or let the
+package build do that for you):
 
 ```bash
 node tools/install-package-build-dependencies.mjs
 ```
+
+Then run the test suite:
 
 ```bash
 bash tools/run-tests.sh
@@ -139,4 +162,7 @@ node tools/protocol-fragmentation-sweep.mjs --seed 0x3f17a5c9
 node tools/protocol-fuzz.mjs --seed 0x7a310f5d --population fuzzer
 ```
 
-Nothing runs on push.
+Branch pushes do not trigger the test suite, so run it locally before pushing.
+A `v*` tag push triggers the five-target packaging workflow; a valid release
+tag creates a draft release if every target passes. The workflow can also be
+started manually.
