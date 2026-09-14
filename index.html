@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Protodriver</title>
+    <script>
+      (function () {
+        const storageKey = "protodriver-theme";
+        let theme;
+        try { theme = localStorage.getItem(storageKey); } catch {}
+        if (theme !== "dark" && theme !== "light") {
+          theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        }
+        document.documentElement.dataset.theme = theme;
+        document.addEventListener("DOMContentLoaded", function () {
+          const button = document.getElementById("theme-toggle");
+          if (!(button instanceof HTMLButtonElement)) throw new Error("theme toggle button is absent");
+          const updateButton = function () {
+            button.textContent = document.documentElement.dataset.theme === "dark" ? "sun" : "moon";
+            button.dataset.ready = "";
+          };
+          updateButton();
+          button.addEventListener("click", function () {
+            const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+            document.documentElement.dataset.theme = next;
+            updateButton();
+            try { localStorage.setItem(storageKey, next); } catch {
+              // The selected theme still applies for this page view when storage is unavailable.
+            }
+          });
+        }, { once: true });
+      }());
+    </script>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Protodriver</h1>
+        <div class="header-status">
+          <span id="state" class="state">disconnected</span>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch color theme" title="Switch color theme"></button>
+        </div>
+      </header>
+
+      <section class="connection panel">
+        <div>
+          <h2>Connection</h2>
+          <p id="support">Load a device package to get its controls.</p>
+          <p id="identity" class="mono muted" hidden></p>
+        </div>
+        <div class="connection-fields">
+          <label class="field-wide">Device package
+            <input id="package-file" type="file">
+          </label>
+          <div id="catalog-packages" class="field-wide" hidden>
+            <label>Package catalog
+              <select id="catalog-package" disabled></select>
+            </label>
+          </div>
+          <div class="stored-packages field-wide">
+            <label>Packages this browser remembers
+              <select id="stored-package" disabled></select>
+            </label>
+            <div class="actions">
+              <button id="stored-package-load" class="secondary" type="button" disabled>Load</button>
+              <button id="stored-package-remove" class="secondary" type="button" disabled>Forget</button>
+            </div>
+            <p id="stored-package-status" class="muted">Checking browser storage.</p>
+          </div>
+          <label>Mode
+            <select id="mode" disabled></select>
+          </label>
+          <label>Connection profile
+            <select id="profile" disabled></select>
+          </label>
+        </div>
+        <div class="actions connection-actions">
+          <button id="connect" disabled>Connect</button>
+          <button id="disconnect" class="secondary" disabled>Disconnect</button>
+          <button id="export" class="secondary" disabled>Export capture</button>
+        </div>
+        <div id="candidates" class="actions"></div>
+        <details class="capture-limits">
+          <summary>Capture limits</summary>
+          <div class="capture-limit-fields">
+            <label>Capture memory in total (bytes)
+              <input id="capture-memory-bytes" type="number" min="2" step="1">
+            </label>
+            <label>Of that, reserved for the queue (bytes)
+              <input id="capture-queue-bytes" type="number" min="1" step="1">
+            </label>
+            <p class="muted">Changing either one unloads the current package, because the session is opened with the limits in force.</p>
+          </div>
+        </details>
+      </section>
+
+      <section id="error-panel" class="error panel" hidden>
+        <h2>Error</h2>
+        <p id="error-message"></p>
+        <details class="error-details">
+          <summary>Full error</summary>
+          <pre id="error"></pre>
+        </details>
+      </section>
+
+      <section id="workspace" class="panel" hidden>
+        <h2>Task workspace</h2>
+        <div id="generated-controls" class="generated-controls"></div>
+      </section>
+
+      <details class="tools panel">
+        <summary>Tools</summary>
+        <div class="tool-regions">
+          <section class="terminal tool-region">
+            <h2>Raw terminal</h2>
+            <p id="terminal-status" class="muted">Select a connection profile.</p>
+            <div id="terminal-content" hidden>
+              <div class="actions">
+                <button id="terminal-open" disabled>Open raw terminal</button>
+                <button id="terminal-exit" class="secondary" disabled>Exit and recover</button>
+              </div>
+              <form id="terminal-write" class="terminal-write">
+                <label>Bytes (hex)
+                  <input id="terminal-bytes" class="mono" type="text" placeholder="41 54 0d 0a" disabled>
+                </label>
+                <button id="terminal-send" type="submit" disabled>Send bytes</button>
+              </form>
+              <pre id="terminal-output" class="hex"></pre>
+            </div>
+          </section>
+
+          <section class="diagnostics tool-region">
+            <div class="diagnostic-heading">
+              <div>
+                <h2>Protocol hex</h2>
+                <p id="protocol-status" class="muted">Available during a session or from its retained capture.</p>
+              </div>
+              <button id="pause" class="secondary" disabled>Pause</button>
+            </div>
+            <div id="protocol-content" hidden>
+              <p id="drops" class="muted">No diagnostic loss.</p>
+              <pre id="hex" class="hex"></pre>
+            </div>
+          </section>
+        </div>
+      </details>
+
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
