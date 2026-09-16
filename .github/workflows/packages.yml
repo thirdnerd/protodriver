@@ -74,6 +74,60 @@ jobs:
           path: package-output/protodriver-*
           if-no-files-found: error
 
+  # The hosted page is published by the same tag that builds the archives, so
+  # that shipping is one act. Publishing it separately is how it went three days
+  # and one release stale while serving a defect that was already fixed on main.
+  #
+  # The catalog location is this deployment's fact, not the product's: the page
+  # lives under /protodriver/ and the packages under /pdpackages/, published from
+  # a different repository onto the same origin. Nothing in apps/web/src names it.
+  pages:
+    name: hosted page
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+      - name: Install workspaces the browser build needs
+        run: node tools/install-package-build-dependencies.mjs
+      - name: Build the browser host
+        run: node apps/web/build.mjs --catalog ../pdpackages/catalog.json --output web-dist
+      # Refuses a source map, a source leak, or any file outside its closed set.
+      - name: Stage the publishable files
+        run: node tools/stage-pages.mjs web-dist pages
+      - name: Publish to gh-pages
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
+          git clone --quiet --branch gh-pages --depth 1 "$remote" published
+          # The build owns only its own files. Anything else on the branch is
+          # another owner's and is left exactly as found.
+          # -A so the leading-dot .nojekyll is carried; plain ls would drop it.
+          for name in $(ls -A pages); do
+            rm -rf "published/$name"
+            cp -R "pages/$name" "published/$name"
+          done
+          cd published
+          git config user.name "thirdnerd"
+          git config user.email "280008708+thirdnerd@users.noreply.github.com"
+          # Stage first: an untracked new file is invisible to git diff.
+          git add -A
+          if git diff --cached --quiet; then
+            echo "published page already matches this build"
+            exit 0
+          fi
+          git commit --quiet -m "Publish the browser host built at ${GITHUB_SHA} for ${RELEASE_TAG}"
+          git push --quiet origin gh-pages
+
   release:
     if: github.event_name == 'push'
     needs: package

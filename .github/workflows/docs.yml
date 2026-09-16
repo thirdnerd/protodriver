@@ -19,13 +19,52 @@ name: docs
 #     cd packages/transport-node-serial && npm ci && npm run verify
 #     cd apps/cli && npm ci && npm run verify
 #
-# Reinstate a push trigger when there is product code whose breakage a
-# human would not otherwise notice. Until then the compiler is the loop.
+# A release tag reinstated part of that: the suites now run on Windows, where
+# the compiler is not the loop because the breakage is platform-specific. Two
+# defects reached v0.1.0 that nobody could have noticed locally on Linux - a
+# test runner recorded without its executable bit, and twelve test paths built
+# from a file URL that only misbehaves on Windows. Everything else stays manual.
 
 on:
   workflow_dispatch:
+  push:
+    tags: ["v*"]
 
 jobs:
+  windows-suites:
+    name: suites on Windows
+    runs-on: windows-2025
+    steps:
+      # Committed bytes must reach the runner unchanged; a rewritten line
+      # ending is its own failure and would be read as a test defect.
+      - name: Configure checkout line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+      - name: Install every workspace
+        run: node tools/install-package-build-dependencies.mjs
+      # Deliberately not tools/run-tests.sh: that script's verdict depends on
+      # GNU timeout, which a Windows runner has no equivalent of, and on a
+      # clean extraction that a fresh checkout already provides. This answers
+      # the narrower question the Linux verdict cannot - whether the suites
+      # pass on Windows - and does not try to mean the same thing.
+      - name: Run every discovered suite
+        shell: bash
+        run: |
+          fail=0
+          ran=0
+          for root in apps/* packages/* tools; do
+            [ -d "$root/test" ] || continue
+            echo "== $root"
+            ( cd "$root" && node --test test/*.test.mjs ) || fail=1
+            ran=$((ran + 1))
+          done
+          echo "suites run: $ran"
+          [ "$ran" -gt 0 ] || { echo "no suite ran; discovery is broken"; exit 2; }
+          exit $fail
+
   contracts:
     name: contracts compile
     runs-on: ubuntu-latest
