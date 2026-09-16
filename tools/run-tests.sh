@@ -85,7 +85,10 @@ for w in $workspaces; do
 done
 echo
 fail=0; tested=0
-suite_timeout_seconds=30
+# Hosted docs run 35100066680 measured apps/cli at 32.236s, core at
+# 30.524s, apps/web at 17.373s, and tools at 16.728s. A 60s bound leaves
+# headroom for a noisy shared runner while still stopping a hung suite promptly.
+suite_timeout_seconds=60
 for w in $test_roots; do
   printf '%-32s ' "$w"
   raw=$( cd "$w" && timeout --foreground --kill-after=5s \
