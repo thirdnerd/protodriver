@@ -28,15 +28,6 @@ test("staging publishes the four browser assets and .nojekyll", async () => {
   assert.deepEqual((await readdir(output)).sort(), [".nojekyll", ...PUBLISHABLE].sort());
 });
 
-test("staging also publishes an optional catalog without requiring it", async () => {
-  const { dist, output } = await distWith();
-  const catalog = '{"packages":[{"name":"Device","url":"device.pdpkg"}]}\n';
-  await writeFile(join(dist, "catalog.json"), catalog);
-  const result = await stagePages(dist, output);
-  assert.deepEqual(result.files.sort(), [".nojekyll", "catalog.json", ...PUBLISHABLE].sort());
-  assert.equal(await readFile(join(output, "catalog.json"), "utf8"), catalog);
-});
-
 test("staging refuses an unexpected sixth source file rather than silently skipping it", async () => {
   const { dist, output } = await distWith();
   await writeFile(join(dist, "surprise.txt"), "unexpected\n");

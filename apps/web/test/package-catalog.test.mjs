@@ -184,3 +184,29 @@ test("entry fetch errors name entry and host and distinguish HTTP from browser r
   assert.match(refused.errors[0], /Remote.*other\.test.*browser refused/u);
   assert.doesNotMatch(refused.errors[0], /HTTP/u);
 });
+
+// A deployment may keep its catalog beside its packages rather than beside the
+// page, so that publishing a package needs no rebuild of the app and rebuilding
+// the app cannot disturb the catalog. The location is a deployment fact, so the
+// page takes it from the document and falls back to its own directory.
+
+test("a configured catalog location is where discovery asks", async () => {
+  const sibling = "https://example.test/pdpackages/catalog.json";
+  const entryUrl = "https://example.test/pdpackages/handheld/handheld.pdpkg";
+  const h = harness(async url => url === sibling
+    ? catalog('{"packages":[{"name":"Handheld","url":"handheld/handheld.pdpkg"}]}', sibling)
+    : packageResponse([1, 2, 3]));
+  await installPackageCatalog({ ...h.view, catalogHref: "../pdpackages/catalog.json" });
+  assert.deepEqual(h.calls, [sibling], "the page must ask where the deployment said, not beside itself");
+  assert.deepEqual(h.select.options.map(option => option.textContent), ["Handheld"]);
+  h.select.choose(0);
+  await settle();
+  assert.deepEqual(h.calls, [sibling, entryUrl]);
+  assert.deepEqual(h.loaded, [[1, 2, 3]]);
+});
+
+test("with no configured location the page still looks beside itself", async () => {
+  const h = harness(async () => catalog('{"packages":[]}'));
+  await installPackageCatalog(h.view);
+  assert.deepEqual(h.calls, [discoveryUrl], "the default must stay deployment-agnostic");
+});

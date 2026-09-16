@@ -183,6 +183,9 @@ setConnected(false);
 void refreshStoredPackages().catch(showError);
 void installPackageCatalog({
   baseURI: document.baseURI,
+  catalogHref: document.querySelector<HTMLMetaElement>(
+    'meta[name="protodriver-package-catalog"]',
+  )?.content,
   region: catalogRegion,
   select: catalogSelect,
   document,

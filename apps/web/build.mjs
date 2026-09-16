@@ -1,4 +1,4 @@
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +9,7 @@ const defaultSourceRoot = dirname(fileURLToPath(import.meta.url));
 export async function buildWebDistribution({
   sourceDirectory = defaultSourceRoot,
   outputDirectory = join(sourceDirectory, "dist"),
+  catalogHref,
 } = {}) {
   const sourceRoot = resolve(sourceDirectory);
   const output = resolve(outputDirectory);
@@ -44,13 +45,56 @@ export async function buildWebDistribution({
       `the page bundle crossed the worker ownership boundary: ${forbiddenPageInputs.join(", ")}`,
     );
   }
+  const sourceIndex = join(sourceRoot, "src", "index.html");
   await Promise.all([
-    cp(join(sourceRoot, "src", "index.html"), join(output, "index.html")),
+    catalogHref === undefined
+      ? cp(sourceIndex, join(output, "index.html"))
+      : writeFile(
+        join(output, "index.html"),
+        declarePackageCatalog(await readFile(sourceIndex, "utf8"), catalogHref),
+      ),
     cp(join(sourceRoot, "src", "styles.css"), join(output, "styles.css")),
   ]);
   return Object.freeze({ outputDirectory: output, metafile: result.metafile });
 }
 
+function declarePackageCatalog(page, catalogHref) {
+  if (typeof catalogHref !== "string") throw new TypeError("catalogHref must be a string");
+  const headEnd = "  </head>";
+  if (!page.includes(headEnd)) throw new Error("browser source page has no closing head element");
+  const declaration = `    <meta name="protodriver-package-catalog" content="${escapeAttribute(catalogHref)}">\n`;
+  return page.replace(headEnd, `${declaration}${headEnd}`);
+}
+
+function escapeAttribute(value) {
+  return value.replace(/[&"<>]/gu, character => ({
+    "&": "&amp;",
+    '"': "&quot;",
+    "<": "&lt;",
+    ">": "&gt;",
+  })[character]);
+}
+
+function parseArguments(argv) {
+  let catalogHref;
+  let outputDirectory;
+  let sourceDirectory;
+  for (let index = 0; index < argv.length; index += 2) {
+    const name = argv[index];
+    const value = argv[index + 1];
+    if (value === undefined) throw new Error(usage());
+    if (name === "--catalog") catalogHref = value;
+    else if (name === "--output") outputDirectory = value;
+    else if (name === "--source") sourceDirectory = value;
+    else throw new Error(usage());
+  }
+  return { catalogHref, outputDirectory, sourceDirectory };
+}
+
+function usage() {
+  return "usage: node apps/web/build.mjs [--catalog HREF] [--output DIRECTORY] [--source DIRECTORY]";
+}
+
 if (await isMainModule(import.meta.url)) {
-  await buildWebDistribution();
+  await buildWebDistribution(parseArguments(process.argv.slice(2)));
 }

@@ -5,6 +5,7 @@ interface CatalogEntry {
 
 interface CatalogView {
   readonly baseURI: string;
+  readonly catalogHref?: string | undefined;
   readonly region: HTMLElement;
   readonly select: HTMLSelectElement;
   readonly document: Pick<Document, "createElement">;
@@ -16,10 +17,10 @@ interface CatalogView {
   readonly onEntryError: (error: unknown) => void;
 }
 
-// Discovery makes exactly one same-origin request. A missing or unreachable
-// catalog is normal; only a present but malformed document is reported.
+// Discovery makes exactly one request. A missing or unreachable catalog is
+// normal; only a present but malformed document is reported.
 export async function installPackageCatalog(view: CatalogView): Promise<void> {
-  const requestedUrl = new URL("catalog.json", view.baseURI).href;
+  const requestedUrl = new URL(view.catalogHref ?? "catalog.json", view.baseURI).href;
   let response: Response;
   try {
     response = await view.fetcher(requestedUrl);

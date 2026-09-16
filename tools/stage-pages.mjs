@@ -26,15 +26,14 @@ export async function stagePages(distDirectory, outputDirectory) {
   if (sourceMaps.length > 0) {
     throw new Error(`stage-pages.source-map-forbidden: observed ${sourceMaps.join(", ")}`);
   }
-  const publishable = [...PUBLISHABLE, ...(sourceFiles.includes("catalog.json") ? ["catalog.json"] : [])];
-  if (sourceFiles.join("\n") !== [...publishable].sort().join("\n")) {
-    throw new Error(`stage-pages.unexpected-contents: expected ${publishable.join(", ")}; observed ${sourceFiles.join(", ")}`);
+  if (sourceFiles.join("\n") !== [...PUBLISHABLE].sort().join("\n")) {
+    throw new Error(`stage-pages.unexpected-contents: expected ${PUBLISHABLE.join(", ")}; observed ${sourceFiles.join(", ")}`);
   }
   await rm(outputDirectory, { recursive: true, force: true });
   await mkdir(outputDirectory, { recursive: true });
 
   const stripped = [];
-  for (const name of publishable) {
+  for (const name of PUBLISHABLE) {
     const source = await readFile(join(distDirectory, name), "utf8");
     const clean = source.replace(/\n?\/\/# sourceMappingURL=[^\n]*\n?/gu, "\n");
     if (clean !== source) stripped.push(name);
@@ -44,7 +43,7 @@ export async function stagePages(distDirectory, outputDirectory) {
   await writeFile(join(outputDirectory, ".nojekyll"), "");
 
   const observed = (await readdir(outputDirectory)).sort();
-  const expected = [...publishable, ".nojekyll"].sort();
+  const expected = [...PUBLISHABLE, ".nojekyll"].sort();
   if (observed.join("\n") !== expected.join("\n")) {
     throw new Error(
       `stage-pages.unexpected-contents: expected ${expected.join(", ")}; observed ${observed.join(", ")}`,
