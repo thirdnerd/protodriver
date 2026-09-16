@@ -58,7 +58,14 @@ jobs:
           for root in apps/* packages/* tools; do
             [ -d "$root/test" ] || continue
             echo "== $root"
-            ( cd "$root" && node --test test/*.test.mjs ) || fail=1
+            # run-tests-environment.test.mjs execFiles tools/run-tests.sh, and a
+            # POSIX shell script is not an executable image on Windows: the spawn
+            # fails EFTYPE before the assertion it was written for. What it checks
+            # is the Linux verdict machinery, which does not run here either.
+            files=$(ls "$root"/test/*.test.mjs | grep -v 'run-tests-environment.test.mjs' || true)
+            [ -n "$files" ] || continue
+            # shellcheck disable=SC2086
+            ( cd "$root" && node --test $(echo "$files" | sed "s|^$root/||") ) || fail=1
             ran=$((ran + 1))
           done
           echo "suites run: $ran"
