@@ -1,95 +1,300 @@
-// ../../packages/core/src/clock.ts
-var RESOLUTION_SAMPLE_LIMIT = 1e5;
-var RESOLUTION_CHANGES_REQUIRED = 32;
-var MICROSECONDS_PER_MILLISECOND = 1e3;
-function requireFiniteNonNegative(value, name) {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new RangeError(`${name} must be a finite, non-negative number`);
-  }
-  return value;
+// ../../packages/contracts/src/values.ts
+function isPdrFailureResponsibility(value) {
+  return value === "invocation" || value === "definition" || value === "operation" || value === "host";
 }
-function nextSequence(current) {
-  if (current >= Number.MAX_SAFE_INTEGER) {
-    throw new RangeError("clock sequence exhausted Number.MAX_SAFE_INTEGER");
+
+// ../../packages/contracts/src/units.ts
+var SEMANTIC_UNIT_IDENTIFIERS = Object.freeze([
+  "byte",
+  "centidegree-celsius",
+  "hertz",
+  "microsecond",
+  "millisecond",
+  "millivolt",
+  "tenth-hertz"
+]);
+
+// ../../packages/contracts/src/limits.ts
+var DEFAULT_CAPTURE_CAPACITY_POLICY = Object.freeze({
+  supportedPayloadBytes: 1048576,
+  measuredSourceCutBytes: 9472207,
+  measuredCompleteBytes: 64737185,
+  headroomNumerator: 11,
+  headroomDenominator: 10,
+  maximumQueueBytes: 4 * 1024 * 1024,
+  maximumRetainedBytes: Math.ceil(64737185 * 11 / 10)
+});
+var DEFAULT_HOST_RESOURCE_LIMITS = {
+  maximumBufferedBytesPerChannel: 4 * 1024 * 1024,
+  maximumConcurrentTimers: 1024,
+  maximumTransferWindowBytes: 4 * 1024 * 1024,
+  maximumChunksInFlight: 64,
+  maximumRpcMessageBytes: 8 * 1024 * 1024,
+  maximumResourceChunkBytes: 1024 * 1024,
+  maximumDiagnosticBufferBytes: 2 * 1024 * 1024,
+  maximumEventReplayCount: 256,
+  maximumLosslessQueueDepth: 1024,
+  maximumRetainedOperationResults: 64,
+  maximumClientsPerSession: 4,
+  maximumPendingRpcCalls: 256,
+  maximumSubscriptionsPerClient: 16,
+  maximumDiagnosticSubscribers: 4,
+  maximumConcurrentOperations: 32,
+  maximumOpenResources: 64,
+  maximumOutstandingBrokerCalls: 64,
+  maximumCaptureParts: 4096,
+  // The largest of three complete 1 MiB Device 3 captures was 64,737,185
+  // encoded bytes. Retain 10% measured-population variance headroom, then add
+  // the separately reserved browser capture queue to form the host envelope.
+  maximumCaptureInMemoryBytes: DEFAULT_CAPTURE_CAPACITY_POLICY.maximumQueueBytes + DEFAULT_CAPTURE_CAPACITY_POLICY.maximumRetainedBytes
+};
+
+// ../../packages/contracts/src/transfer.ts
+var TRANSFER_DIGEST_ALGORITHMS = Object.freeze(["sha256"]);
+
+// ../../packages/contracts/src/lua-value-abi.ts
+var LUA_VALUE_ABI_V1_VALUE_KIND_TAGS = Object.freeze({
+  false: 1,
+  true: 2,
+  "signed-bounded-integer": 3,
+  "unsigned-bounded-integer": 4,
+  "arbitrary-integer": 5,
+  "finite-float": 6,
+  text: 7,
+  bytes: 8,
+  array: 9,
+  record: 10,
+  "tagged-variant": 11,
+  null: 12
+});
+
+// ../../packages/contracts/src/lua-source-set.ts
+var SOURCE_SET_MAGIC = new TextEncoder().encode("PDRV-LUA-SOURCE-SET");
+var utf8Encoder = new TextEncoder();
+var fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+// ../../packages/contracts/src/pdpkg.ts
+var UTF8_FLAG = 1 << 11;
+var ENCRYPTED_FLAG = 1 << 0;
+var DATA_DESCRIPTOR_FLAG = 1 << 3;
+var MAX_MEMBER_EXPANDED_BYTES = 1024 * 1024;
+var MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024;
+var utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+var utf8Encoder2 = new TextEncoder();
+var CRC_TABLE = Object.freeze(Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = (value & 1) === 0 ? value >>> 1 : value >>> 1 ^ 3988292384;
   }
-  return current + 1;
+  return value >>> 0;
+}));
+
+// src/errors.ts
+function browserExpectedError(code, message, responsibility, cause) {
+  const error = { code, message, responsibility, retryability: "no" };
+  return Object.assign(new Error(`${code}: ${message}`, cause === void 0 ? void 0 : { cause }), { error });
 }
-function measureResolutionUs(readMilliseconds) {
-  const originMs = readMilliseconds();
-  let previousMs = originMs;
-  let minimumUs = Number.POSITIVE_INFINITY;
-  let changes = 0;
-  for (let sample = 0; sample < RESOLUTION_SAMPLE_LIMIT && changes < RESOLUTION_CHANGES_REQUIRED; sample += 1) {
-    const currentMs = readMilliseconds();
-    const deltaUs = (currentMs - previousMs) * MICROSECONDS_PER_MILLISECOND;
-    if (deltaUs > 0) {
-      minimumUs = Math.min(minimumUs, deltaUs);
-      changes += 1;
+function record(value) {
+  return typeof value === "object" && value !== null;
+}
+function retryability(value) {
+  return value === "no" || value === "after-reconnect" || value === "after-recovery" || value === "unknown";
+}
+function copyTypedFailure(value, wrapperResponsibility) {
+  if (!record(value) || typeof value.code !== "string" || typeof value.message !== "string") return void 0;
+  const responsibility = isPdrFailureResponsibility(value.responsibility) ? value.responsibility : isPdrFailureResponsibility(wrapperResponsibility) ? wrapperResponsibility : void 0;
+  return Object.freeze({
+    code: value.code,
+    message: value.message,
+    ...responsibility === void 0 ? { classification: "unexpected" } : { responsibility },
+    ...Object.hasOwn(value, "details") && value.details !== void 0 ? { details: value.details } : {},
+    ...retryability(value.retryability) ? { retryability: value.retryability } : {},
+    ...Object.hasOwn(value, "platformCause") && value.platformCause !== void 0 ? { platformCause: value.platformCause } : {}
+  });
+}
+function browserFailure(cause) {
+  if (cause instanceof DOMException && cause.name === "AbortError") {
+    return Object.freeze({ code: "web.cancelled", message: cause.message, classification: "cancelled" });
+  }
+  if (record(cause)) {
+    for (const member of [cause.error, cause.diagnostic, cause.causeDiagnostic]) {
+      const failure2 = copyTypedFailure(member, cause.responsibility);
+      if (failure2 !== void 0) return failure2;
     }
-    previousMs = currentMs;
   }
+  return Object.freeze({
+    code: "web.failed",
+    message: cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause),
+    classification: "unexpected"
+  });
+}
+function browserFailureText(error) {
+  if (error.responsibility !== void 0) {
+    const label2 = {
+      invocation: "Change this request",
+      definition: "Fix the device definition",
+      operation: "Recover or inspect the device session",
+      host: "Repair the host environment"
+    };
+    return `${label2[error.responsibility]}: ${error.message}`;
+  }
+  if (error.classification === "cancelled") return `Cancelled: ${error.message}`;
+  return `Unexpected failure: ${error.message}`;
+}
+
+// src/lifecycle.ts
+function installBrowserReleaseHooks(options) {
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    void options.release();
+  };
+  options.window.addEventListener("beforeunload", release);
   return {
-    originMs,
-    resolutionUs: Number.isFinite(minimumUs) ? Math.max(1, minimumUs) : 1
+    dispose: () => options.window.removeEventListener("beforeunload", release)
   };
 }
-var CallbackDisposable = class {
-  #callback;
-  constructor(callback) {
-    this.#callback = callback;
+
+// src/hex-window.ts
+var HEX_OCTETS = Object.freeze(Array.from(
+  { length: 256 },
+  (_, value) => value.toString(16).padStart(2, "0")
+));
+var HexWindow = class {
+  #maximumBytes;
+  #records = [];
+  #retainedBytes = 0;
+  constructor(maximumBytes = 32 * 1024) {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+      throw new RangeError("maximumBytes must be a positive safe integer");
+    }
+    this.#maximumBytes = maximumBytes;
   }
-  dispose() {
-    const callback = this.#callback;
-    this.#callback = void 0;
-    callback?.();
+  append(record3) {
+    const omitted = Math.max(0, record3.bytes.byteLength - this.#maximumBytes);
+    const retained = omitted === 0 ? record3.bytes : record3.bytes.subarray(omitted);
+    const prefix = `${record3.sequence.toString().padStart(6)} ${record3.tUs.toFixed(0).padStart(10)} ${record3.direction.toUpperCase()}`;
+    const text = `${prefix}${omitted === 0 ? "" : ` \u2026 ${omitted} earlier bytes not rendered`} ${hex(retained)}`;
+    this.#records.push({ retainedBytes: retained.byteLength, text });
+    this.#retainedBytes += retained.byteLength;
+    while (this.#retainedBytes > this.#maximumBytes && this.#records.length > 1) {
+      const removed = this.#records.shift();
+      if (removed !== void 0) this.#retainedBytes -= removed.retainedBytes;
+    }
+    return `${this.#records.map(({ text: line }) => line).join("\n")}
+`;
   }
 };
-var RealClock = class {
-  resolutionUs;
-  #originMs;
-  #sequence = 0;
-  constructor() {
-    const measured = measureResolutionUs(() => performance.now());
-    this.#originMs = measured.originMs;
-    this.resolutionUs = measured.resolutionUs;
+function hex(bytes) {
+  let rendered = "";
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    if (index > 0) rendered += " ";
+    rendered += HEX_OCTETS[bytes[index]];
   }
-  monotonicUs() {
-    return (performance.now() - this.#originMs) * MICROSECONDS_PER_MILLISECOND;
-  }
-  wallClockUnixMs() {
-    return Date.now();
-  }
-  nextSequence() {
-    this.#sequence = nextSequence(this.#sequence);
-    return this.#sequence;
-  }
-  sleep(ms, signal) {
-    requireFiniteNonNegative(ms, "delay");
-    if (signal?.aborted) {
-      return Promise.reject(signal.reason);
+  return rendered;
+}
+
+// src/package-storage.ts
+var PACKAGES = "packages";
+function request(source) {
+  return new Promise((resolve, reject) => {
+    source.addEventListener("success", () => resolve(source.result), { once: true });
+    source.addEventListener(
+      "error",
+      () => reject(source.error ?? new Error("IndexedDB package request failed")),
+      { once: true }
+    );
+  });
+}
+function transactionDone(transaction) {
+  return new Promise((resolve, reject) => {
+    transaction.addEventListener("complete", () => resolve(), { once: true });
+    transaction.addEventListener(
+      "abort",
+      () => reject(transaction.error ?? new Error("IndexedDB package transaction aborted")),
+      { once: true }
+    );
+    transaction.addEventListener(
+      "error",
+      () => reject(transaction.error ?? new Error("IndexedDB package transaction failed")),
+      { once: true }
+    );
+  });
+}
+async function openDatabase(factory, name) {
+  const opening = factory.open(name, 1);
+  opening.addEventListener("upgradeneeded", () => {
+    const database = opening.result;
+    if (!database.objectStoreNames.contains(PACKAGES)) {
+      database.createObjectStore(PACKAGES, { autoIncrement: true });
     }
-    return new Promise((resolve, reject) => {
-      const handle = setTimeout(() => {
-        signal?.removeEventListener("abort", abort);
-        resolve();
-      }, ms);
-      const abort = () => {
-        clearTimeout(handle);
-        signal?.removeEventListener("abort", abort);
-        reject(signal?.reason);
-      };
-      signal?.addEventListener("abort", abort, { once: true });
-    });
+  });
+  return await request(opening);
+}
+function storedBytes(value, id) {
+  if (!(value instanceof Uint8Array)) {
+    throw new Error(`browser.package-storage.invalid-record: stored package ${id} is not raw bytes`);
   }
-  timer(ms, fn) {
-    requireFiniteNonNegative(ms, "delay");
-    const handle = setTimeout(fn, ms);
-    return new CallbackDisposable(() => clearTimeout(handle));
+  return Uint8Array.from(value);
+}
+function numericKey(key) {
+  if (typeof key !== "number" || !Number.isSafeInteger(key) || key < 1) {
+    throw new Error("browser.package-storage.invalid-key: IndexedDB did not return a positive integer key");
   }
-  interval(ms, fn) {
-    requireFiniteNonNegative(ms, "delay");
-    const handle = setInterval(fn, ms);
-    return new CallbackDisposable(() => clearInterval(handle));
+  return key;
+}
+var BrowserPackageStore = class {
+  #database;
+  constructor(factory, databaseName = "protodriver-imported-packages") {
+    this.#database = openDatabase(factory, databaseName);
+  }
+  async add(bytes) {
+    const database = await this.#database;
+    const transaction = database.transaction(PACKAGES, "readwrite", { durability: "strict" });
+    const done = transactionDone(transaction);
+    try {
+      const key = await request(transaction.objectStore(PACKAGES).add(Uint8Array.from(bytes)));
+      await done;
+      return numericKey(key);
+    } catch (cause) {
+      try {
+        transaction.abort();
+      } catch {
+      }
+      await done.catch(() => void 0);
+      throw cause;
+    }
+  }
+  async list() {
+    const database = await this.#database;
+    const transaction = database.transaction(PACKAGES, "readonly");
+    const done = transactionDone(transaction);
+    const store = transaction.objectStore(PACKAGES);
+    const [keys, values] = await Promise.all([request(store.getAllKeys()), request(store.getAll())]);
+    await done;
+    if (keys.length !== values.length) {
+      throw new Error("browser.package-storage.invalid-record: package keys and values differ in length");
+    }
+    return Object.freeze(keys.map((key, index) => {
+      const id = numericKey(key);
+      return Object.freeze({ id, byteLength: storedBytes(values[index], id).byteLength });
+    }));
+  }
+  async read(id) {
+    const database = await this.#database;
+    const transaction = database.transaction(PACKAGES, "readonly");
+    const done = transactionDone(transaction);
+    const value = await request(transaction.objectStore(PACKAGES).get(id));
+    await done;
+    return value === void 0 ? null : storedBytes(value, id);
+  }
+  async remove(id) {
+    const database = await this.#database;
+    const transaction = database.transaction(PACKAGES, "readwrite", { durability: "strict" });
+    const done = transactionDone(transaction);
+    await request(transaction.objectStore(PACKAGES).delete(id));
+    await done;
   }
 };
 
@@ -114,6 +319,7 @@ var HostResourceLimitError = class extends Error {
     const error = {
       code,
       message: `${scope} exceeds ${limit}: observed ${observed}, maximum ${maximum}`,
+      responsibility: "host",
       retryability: "no",
       details: { limit, maximum, observed, scope }
     };
@@ -125,8 +331,8 @@ var HostResourceLimitError = class extends Error {
 function canonicalPublic(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalPublic).join(",")}]`;
-  const record2 = value;
-  return `{${Object.keys(record2).sort().map((key) => `${JSON.stringify(key)}:${canonicalPublic(record2[key])}`).join(",")}}`;
+  const record3 = value;
+  return `{${Object.keys(record3).sort().map((key) => `${JSON.stringify(key)}:${canonicalPublic(record3[key])}`).join(",")}}`;
 }
 function rpcBytes(value, meter, replacement) {
   meter?.reserve(8);
@@ -241,9 +447,742 @@ function snapshotPlatformCause(cause, detailKeys = DEFAULT_CAUSE_DETAIL_KEYS) {
   };
 }
 
+// ../../packages/core/src/capture-path.ts
+var CapturePartNameError = class extends Error {
+  rule;
+  constructor(name, rule) {
+    super(`capture part name ${JSON.stringify(name)} rejected by ${rule} rule`);
+    this.name = "CapturePartNameError";
+    this.rule = rule;
+  }
+};
+var MAX_CAPTURE_PART_NAME_LENGTH = 255;
+var PORTABLE_CAPTURE_PART_NAME = /^[A-Za-z0-9._-]+$/;
+var WINDOWS_RESERVED_DEVICE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+function assertCapturePartName(name) {
+  if (name.length === 0 || name.length > MAX_CAPTURE_PART_NAME_LENGTH) {
+    throw new CapturePartNameError(name, "length");
+  }
+  if (!PORTABLE_CAPTURE_PART_NAME.test(name)) {
+    throw new CapturePartNameError(name, "character-set");
+  }
+  if (name.startsWith(".")) {
+    throw new CapturePartNameError(name, "leading-dot");
+  }
+  if (name.endsWith(".")) {
+    throw new CapturePartNameError(name, "trailing-dot");
+  }
+  const basename = name.split(".", 1)[0];
+  if (basename !== void 0 && WINDOWS_RESERVED_DEVICE.test(basename)) {
+    throw new CapturePartNameError(name, "reserved-device");
+  }
+}
+
+// ../../packages/core/src/capture-rpc.ts
+function causeSnapshot(cause) {
+  if (!(cause instanceof Error)) return void 0;
+  return snapshotPlatformCause(cause);
+}
+function captureError(code, message, cause) {
+  const platformCause = causeSnapshot(cause);
+  return {
+    code,
+    message,
+    responsibility: "host",
+    retryability: "no",
+    ...platformCause === void 0 ? {} : { platformCause }
+  };
+}
+var CaptureDestinationRegistry = class {
+  #destinations = /* @__PURE__ */ new Map();
+  #maximumPartsPerDestination;
+  #nextId = 1;
+  constructor(maximumPartsPerDestination = DEFAULT_PHASE_ONE_LIMITS.maximumCaptureParts) {
+    this.#maximumPartsPerDestination = maximumPartsPerDestination;
+  }
+  get size() {
+    return this.#destinations.size;
+  }
+  async register(destination, sessionId) {
+    const id = `capture-destination-${this.#nextId++}`;
+    this.#destinations.set(id, { id, destination, sessionId, partsOpened: 0 });
+    return id;
+  }
+  async release(id) {
+    this.#destinations.delete(id);
+  }
+  async handle(request2, sessionId) {
+    const entry = this.#destinations.get(request2.destinationId);
+    if (entry === void 0 || entry.sessionId !== sessionId) {
+      return {
+        kind: "error",
+        error: captureError(
+          "capture.destination-unknown",
+          `capture destination ${request2.destinationId} is not registered`
+        )
+      };
+    }
+    try {
+      switch (request2.kind) {
+        case "open-part": {
+          assertCapturePartName(request2.name);
+          if (entry.partsOpened >= this.#maximumPartsPerDestination) {
+            throw new HostResourceLimitError(
+              "capture.part-limit",
+              "maximumCaptureParts",
+              this.#maximumPartsPerDestination,
+              entry.partsOpened + 1,
+              "capture"
+            );
+          }
+          entry.partsOpened += 1;
+          let resourceId;
+          try {
+            resourceId = await entry.destination.openPart(
+              request2.name,
+              request2.contentType === void 0 ? void 0 : { contentType: request2.contentType }
+            );
+          } catch (cause) {
+            entry.partsOpened -= 1;
+            throw cause;
+          }
+          return {
+            kind: "part-opened",
+            resourceId
+          };
+        }
+        case "commit-destination":
+          await entry.destination.commit();
+          return { kind: "ok" };
+        case "abort-destination":
+          await entry.destination.abort(request2.error);
+          return { kind: "ok" };
+      }
+    } catch (cause) {
+      if (cause instanceof HostResourceLimitError) {
+        return { kind: "error", error: cause.error };
+      }
+      return {
+        kind: "error",
+        error: captureError(
+          `capture.${request2.kind}-failed`,
+          cause instanceof Error ? cause.message : String(cause),
+          cause
+        )
+      };
+    }
+  }
+};
+function isCaptureResponse(message) {
+  return message.kind === "part-opened" || message.kind === "ok" || message.kind === "error";
+}
+function serveCaptureDestinationRpc(endpoint, registry, sessionId) {
+  let closed = false;
+  const onMessage = ({ data }) => {
+    if (closed || isCaptureResponse(data)) return;
+    void registry.handle(data, sessionId).then((response) => {
+      if (!closed) endpoint.postMessage(response);
+    });
+  };
+  endpoint.addEventListener("message", onMessage);
+  endpoint.start?.();
+  return {
+    dispose() {
+      if (closed) return;
+      closed = true;
+      endpoint.removeEventListener("message", onMessage);
+      endpoint.close?.();
+    }
+  };
+}
+
+// ../../packages/core/src/resources.ts
+var ResourceBrokerError = class extends Error {
+  error;
+  constructor(error) {
+    super(error.message);
+    this.name = "ResourceBrokerError";
+    this.error = error;
+  }
+};
+var PartialResourceWriteError = class extends Error {
+  knownAcceptedBytes;
+  requestedBytes;
+  constructor(knownAcceptedBytes, requestedBytes, message = "resource write was partial") {
+    super(message);
+    this.name = "PartialResourceWriteError";
+    this.knownAcceptedBytes = requireNonNegativeSafeInteger(knownAcceptedBytes, "knownAcceptedBytes");
+    this.requestedBytes = requireNonNegativeSafeInteger(requestedBytes, "requestedBytes");
+    if (knownAcceptedBytes >= requestedBytes) {
+      throw new RangeError("a partial write must accept fewer bytes than requested");
+    }
+  }
+};
+function requireNonNegativeSafeInteger(value, name) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative safe integer`);
+  }
+  return value;
+}
+function pdrError(code, message, details) {
+  return {
+    code,
+    message,
+    responsibility: "operation",
+    retryability: "no",
+    ...details === void 0 ? {} : { details }
+  };
+}
+function causeSnapshot2(cause) {
+  if (!(cause instanceof Error)) return void 0;
+  return snapshotPlatformCause(cause);
+}
+function failure(cause, operation) {
+  if (cause instanceof ResourceBrokerError) return cause.error;
+  if (cause instanceof PartialResourceWriteError) {
+    const base2 = pdrError(
+      "resource.partial-write",
+      cause.message,
+      {
+        knownAcceptedBytes: cause.knownAcceptedBytes,
+        requestedBytes: cause.requestedBytes
+      }
+    );
+    const platformCause2 = causeSnapshot2(cause);
+    return platformCause2 === void 0 ? { ...base2, responsibility: "host" } : { ...base2, responsibility: "host", platformCause: platformCause2 };
+  }
+  const base = pdrError(
+    `resource.${operation}-failed`,
+    cause instanceof Error ? cause.message : String(cause)
+  );
+  const platformCause = causeSnapshot2(cause);
+  return platformCause === void 0 ? { ...base, responsibility: "host" } : { ...base, responsibility: "host", platformCause };
+}
+function responseError(callId, error) {
+  return { kind: "error", callId, error };
+}
+function sameSession(scope, sessionId) {
+  return scope.kind !== "host" && scope.sessionId === sessionId;
+}
+var ResourceBrokerHost = class {
+  #namespace = crypto.randomUUID();
+  #resources = /* @__PURE__ */ new Map();
+  #callsById = /* @__PURE__ */ new Map();
+  #callByResource = /* @__PURE__ */ new Map();
+  #maximumOpenResources;
+  #maximumOutstandingCalls;
+  #maximumChunkBytes;
+  #nextResource = 1;
+  #nextRegistrationOrder = 1;
+  #currentReadBufferBytes = 0;
+  #highWaterReadBufferBytes = 0;
+  constructor(options = {}) {
+    this.#maximumOpenResources = options.maximumOpenResources ?? DEFAULT_PHASE_ONE_LIMITS.maximumOpenResources;
+    this.#maximumOutstandingCalls = options.maximumOutstandingCalls ?? DEFAULT_PHASE_ONE_LIMITS.maximumOutstandingBrokerCalls;
+    this.#maximumChunkBytes = options.maximumChunkBytes ?? DEFAULT_PHASE_ONE_LIMITS.maximumResourceChunkBytes;
+  }
+  get metrics() {
+    return {
+      currentReadBufferBytes: this.#currentReadBufferBytes,
+      highWaterReadBufferBytes: this.#highWaterReadBufferBytes,
+      openResources: this.#resources.size,
+      callsInFlight: this.#callsById.size
+    };
+  }
+  async registerSource(source, scope) {
+    return this.#register({ kind: "source", source, scope });
+  }
+  async registerSink(sink, scope) {
+    return this.#register({ kind: "sink", sink, scope });
+  }
+  async outstanding() {
+    return [...this.#resources.values()].filter(({ scope }) => scope.kind === "host").sort((left, right) => left.registrationOrder - right.registrationOrder).map(({ id }) => id);
+  }
+  async handle(request2) {
+    const callId = request2.call.callId;
+    if (this.#callsById.has(callId)) {
+      return responseError(callId, pdrError(
+        "resource.call-id-in-use",
+        `broker call id ${callId} is already in flight`
+      ));
+    }
+    if (request2.kind === "cancel") return this.#cancel(request2);
+    if (request2.kind === "close" && !this.#resources.has(request2.id)) {
+      return { kind: "ok", callId };
+    }
+    const entry = this.#resources.get(request2.id);
+    if (entry === void 0) {
+      return responseError(callId, pdrError(
+        "resource.unknown-id",
+        `resource ${request2.id} is not open`
+      ));
+    }
+    if (entry.readGrant && request2.kind !== "release-read" && request2.call.readGrantId !== entry.readGrant.id) {
+      return responseError(callId, pdrError("resource.delegated", "source is exclusively delegated to " + entry.readGrant.operationId));
+    }
+    if (request2.call.readGrantId !== void 0 && request2.call.readGrantId !== entry.readGrant?.id) {
+      return responseError(callId, pdrError("resource.stale-grant", "read delegation is unavailable"));
+    }
+    if (request2.kind === "read" && request2.maximumBytes > this.#maximumChunkBytes) {
+      return responseError(callId, new HostResourceLimitError(
+        "resource.chunk-too-large",
+        "maximumResourceChunkBytes",
+        this.#maximumChunkBytes,
+        request2.maximumBytes,
+        "resource"
+      ).error);
+    }
+    if (request2.kind === "write" && request2.data.byteLength > this.#maximumChunkBytes) {
+      return responseError(callId, new HostResourceLimitError(
+        "resource.chunk-too-large",
+        "maximumResourceChunkBytes",
+        this.#maximumChunkBytes,
+        request2.data.byteLength,
+        "resource"
+      ).error);
+    }
+    const active = this.#callByResource.get(request2.id);
+    if (active !== void 0) {
+      return responseError(callId, pdrError(
+        "resource.call-in-flight",
+        `resource ${request2.id} already has call ${active} in flight`,
+        { resourceId: request2.id, holderCallId: active }
+      ));
+    }
+    if (this.#callsById.size >= this.#maximumOutstandingCalls) {
+      return responseError(callId, new HostResourceLimitError(
+        "resource.outstanding-call-limit",
+        "maximumOutstandingBrokerCalls",
+        this.#maximumOutstandingCalls,
+        this.#callsById.size + 1,
+        "resource"
+      ).error);
+    }
+    const pending = {
+      cancelled: false,
+      settled: false
+    };
+    this.#callsById.set(callId, pending);
+    this.#callByResource.set(request2.id, callId);
+    try {
+      const response = await this.#execute(entry, request2);
+      pending.settled = true;
+      if (pending.cancelled && request2.kind === "read" && !entry.readGrant) {
+        if (response.kind === "read") this.#stageRead(entry, response.result);
+        return responseError(callId, pdrError(
+          "resource.cancelled",
+          `resource call ${callId} was cancelled before completion`
+        ));
+      }
+      return response;
+    } catch (cause) {
+      pending.settled = true;
+      if (pending.cancelled && request2.kind === "read") {
+        return responseError(callId, pdrError(
+          "resource.cancelled",
+          `resource call ${callId} was cancelled before completion`
+        ));
+      }
+      return responseError(callId, failure(cause, request2.kind));
+    } finally {
+      this.#callsById.delete(callId);
+      this.#callByResource.delete(request2.id);
+    }
+  }
+  async endOperation(sessionId, operationId) {
+    this.#throwCloseFailures(await this.#closeMatching(({ scope }) => scope.kind === "operation" && scope.sessionId === sessionId && scope.operationId === operationId));
+  }
+  async endSession(sessionId) {
+    const failures = [
+      ...await this.#closeMatching(({ scope }) => scope.kind === "operation" && sameSession(scope, sessionId)),
+      ...await this.#closeMatching(({ scope }) => scope.kind === "session" && sameSession(scope, sessionId))
+    ];
+    this.#throwCloseFailures(failures);
+    return { outstandingHostResources: await this.outstanding() };
+  }
+  async shutdown() {
+    const failures = [
+      ...await this.#closeMatching(({ scope }) => scope.kind === "operation"),
+      ...await this.#closeMatching(({ scope }) => scope.kind === "session")
+    ];
+    this.#throwCloseFailures(failures);
+    return { outstandingHostResources: await this.outstanding() };
+  }
+  async closeResource(id) {
+    const entry = this.#resources.get(id);
+    if (entry === void 0) return;
+    if (this.#callByResource.has(id)) {
+      throw new ResourceBrokerError(pdrError(
+        "resource.call-in-flight",
+        `resource ${id} has a call in flight`
+      ));
+    }
+    await this.#closeEntry(entry);
+  }
+  #register(options) {
+    if (this.#resources.size >= this.#maximumOpenResources) {
+      throw new HostResourceLimitError(
+        "resource.open-limit",
+        "maximumOpenResources",
+        this.#maximumOpenResources,
+        this.#resources.size + 1,
+        "resource"
+      );
+    }
+    const id = `resource-${this.#namespace}-${this.#nextResource++}`;
+    this.#resources.set(id, {
+      id,
+      kind: options.kind,
+      scope: options.scope,
+      registrationOrder: this.#nextRegistrationOrder++,
+      ...options.source === void 0 ? {} : { source: options.source },
+      ...options.sink === void 0 ? {} : { sink: options.sink }
+    });
+    return id;
+  }
+  #cancel(request2) {
+    const pending = this.#callsById.get(request2.targetCallId);
+    if (pending !== void 0 && !pending.settled) pending.cancelled = true;
+    return { kind: "ok", callId: request2.call.callId };
+  }
+  async #execute(entry, request2) {
+    const callId = request2.call.callId;
+    switch (request2.kind) {
+      case "grant-write": {
+        if (entry.kind !== "sink") throw new ResourceBrokerError(pdrError("resource.wrong-kind", "streamed output requires a sink"));
+        if (entry.scope.kind === "operation" && entry.scope.operationId !== request2.operationId)
+          throw new ResourceBrokerError(pdrError("resource.wrong-owner", "sink belongs to another operation"));
+        if (typeof request2.operationId !== "string" || !request2.operationId || request2.operationId.length > 256 || !Number.isSafeInteger(request2.maximumBytes) || request2.maximumBytes < 1)
+          throw new ResourceBrokerError(pdrError("resource.write-grant", "finite operation output extent required"));
+        if (entry.written || entry.writeGrant) throw new ResourceBrokerError(pdrError("resource.destination-used", "streamed result requires a fresh destination"));
+        entry.writeGrant = { id: callId, maximumBytes: request2.maximumBytes, submitted: 0 };
+        return { kind: "write-granted", callId, grantId: callId };
+      }
+      case "grant-stream":
+      case "grant-read": {
+        if (entry.kind !== "source") throw new ResourceBrokerError(pdrError("resource.wrong-kind", "bounded input requires a source"));
+        if (entry.scope.kind === "operation" && entry.scope.operationId !== request2.operationId)
+          throw new ResourceBrokerError(pdrError("resource.wrong-owner", "source belongs to another operation"));
+        const maximumBytes = requireNonNegativeSafeInteger(request2.maximumBytes, "maximumBytes");
+        if (request2.kind === "grant-read" && maximumBytes > 65537 || maximumBytes >= Number.MAX_SAFE_INTEGER || !request2.operationId || request2.operationId.length > 256)
+          throw new ResourceBrokerError(pdrError("resource.read-grant", "bounded operation read grant required"));
+        if (entry.readGrant) throw new ResourceBrokerError(pdrError("resource.delegated", "source already delegated"));
+        const grant = {
+          id: callId,
+          operationId: request2.operationId,
+          maximumBytes,
+          ...request2.kind === "grant-stream" ? { streaming: true } : {},
+          byteLength: entry.source.byteLength,
+          seekable: entry.source.seek !== void 0,
+          origin: entry.source.origin ?? "other",
+          scope: entry.scope.kind
+        };
+        entry.readGrant = grant;
+        entry.grantedReadBytes = 0;
+        entry.rewound = false;
+        return { kind: "read-granted", callId, grant };
+      }
+      case "release-read": {
+        if (!entry.readGrant || entry.readGrant.id !== request2.grantId)
+          throw new ResourceBrokerError(pdrError("resource.stale-grant", "read delegation is unavailable"));
+        delete entry.readGrant;
+        delete entry.grantedReadBytes;
+        delete entry.rewound;
+        delete entry.streamOffset;
+        if (entry.scope.kind === "operation") await this.#closeEntry(entry, callId);
+        return { kind: "ok", callId };
+      }
+      case "describe":
+        return {
+          kind: "described",
+          callId,
+          descriptor: entry.kind === "source" ? {
+            byteLength: entry.source.byteLength,
+            seekable: entry.source.seek !== void 0
+          } : { byteLength: void 0, seekable: false }
+        };
+      case "read": {
+        if (entry.kind !== "source") throw new ResourceBrokerError(pdrError(
+          "resource.wrong-kind",
+          `resource ${entry.id} is not a source`
+        ));
+        const maximumBytes = requireNonNegativeSafeInteger(request2.maximumBytes, "maximumBytes");
+        if (maximumBytes === 0) throw new RangeError("maximumBytes must be greater than zero");
+        if (entry.readGrant) {
+          if (!entry.rewound || (entry.readGrant.streaming ? maximumBytes > 256 || maximumBytes > entry.readGrant.maximumBytes + 1 - (entry.streamOffset ?? 0) : maximumBytes > entry.readGrant.maximumBytes - entry.grantedReadBytes))
+            throw new ResourceBrokerError(pdrError("resource.read-grant-exhausted", "read exceeds the reserved operation range or has no origin"));
+          entry.grantedReadBytes += maximumBytes;
+        }
+        if (entry.bufferedRead !== void 0) {
+          return { kind: "read", callId, result: this.#takeBufferedRead(entry, maximumBytes) };
+        }
+        const workspace = new Uint8Array(maximumBytes);
+        this.#retainReadBuffer(maximumBytes);
+        try {
+          const result = await entry.source.read(workspace);
+          const bytesRead = requireNonNegativeSafeInteger(result.bytesRead, "bytesRead");
+          if (bytesRead > maximumBytes) {
+            throw new RangeError(`source reported ${bytesRead} bytes into a ${maximumBytes}-byte buffer`);
+          }
+          if (entry.readGrant) entry.grantedReadBytes -= maximumBytes - bytesRead;
+          if (entry.readGrant?.streaming) entry.streamOffset = (entry.streamOffset ?? 0) + bytesRead;
+          let data;
+          if (bytesRead === maximumBytes) {
+            data = workspace.buffer;
+          } else {
+            this.#retainReadBuffer(bytesRead);
+            try {
+              data = workspace.buffer.slice(0, bytesRead);
+            } finally {
+              this.#releaseReadBuffer(bytesRead);
+            }
+          }
+          return { kind: "read", callId, result: { data, eof: result.eof } };
+        } finally {
+          this.#releaseReadBuffer(maximumBytes);
+        }
+      }
+      case "seek":
+        if (entry.kind !== "source") throw new ResourceBrokerError(pdrError(
+          "resource.wrong-kind",
+          `resource ${entry.id} is not a source`
+        ));
+        if (entry.source.seek === void 0) throw new ResourceBrokerError(pdrError(
+          "resource.not-seekable",
+          `resource ${entry.id} is not seekable`
+        ));
+        if (entry.readGrant && !entry.readGrant.streaming && (request2.offset !== 0 || entry.rewound))
+          throw new ResourceBrokerError(pdrError("resource.read-origin", "bounded grant permits exactly one initial rewind"));
+        if (entry.readGrant?.streaming && (!Number.isSafeInteger(request2.offset) || request2.offset < 0 || request2.offset > entry.readGrant.maximumBytes))
+          throw new ResourceBrokerError(pdrError("resource.read-origin", "stream seek exceeds delegated source domain"));
+        this.#discardBufferedRead(entry);
+        await entry.source.seek(requireNonNegativeSafeInteger(request2.offset, "offset"));
+        if (entry.readGrant) entry.rewound = true;
+        if (entry.readGrant?.streaming) entry.streamOffset = request2.offset;
+        return { kind: "ok", callId };
+      case "write":
+        if (entry.kind !== "sink") throw new ResourceBrokerError(pdrError(
+          "resource.wrong-kind",
+          `resource ${entry.id} is not a sink`
+        ));
+        if (entry.writeGrant) {
+          const g = entry.writeGrant;
+          if (g.failed || request2.call.writeGrantId !== g.id || request2.data.byteLength > 256 || request2.data.byteLength > g.maximumBytes - g.submitted)
+            throw new ResourceBrokerError(pdrError("resource.write-grant", "write is outside its append grant"));
+          g.submitted += request2.data.byteLength;
+        } else if (request2.call.writeGrantId) throw new ResourceBrokerError(pdrError("resource.stale-grant", "write grant is unavailable"));
+        entry.written = true;
+        try {
+          await entry.sink.write(new Uint8Array(request2.data));
+        } catch (cause) {
+          if (entry.writeGrant) entry.writeGrant.failed = true;
+          throw cause;
+        }
+        return { kind: "ok", callId };
+      case "close":
+        await this.#closeEntry(entry, callId);
+        return { kind: "ok", callId };
+    }
+  }
+  async #closeMatching(predicate) {
+    const entries = [...this.#resources.values()].filter(predicate).sort((left, right) => left.registrationOrder - right.registrationOrder);
+    const failures = [];
+    for (const entry of entries) {
+      try {
+        await this.#closeEntry(entry);
+      } catch (cause) {
+        failures.push(cause);
+      }
+    }
+    return failures;
+  }
+  #throwCloseFailures(failures) {
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "one or more resources failed to close");
+    }
+  }
+  async #closeEntry(entry, allowedCallId) {
+    if (!this.#resources.has(entry.id)) return;
+    const activeCallId = this.#callByResource.get(entry.id);
+    if (activeCallId !== void 0 && activeCallId !== allowedCallId) {
+      throw new ResourceBrokerError(pdrError(
+        "resource.call-in-flight",
+        `resource ${entry.id} has a call in flight`
+      ));
+    }
+    await (entry.kind === "source" ? entry.source.close() : entry.sink.close());
+    this.#discardBufferedRead(entry);
+    this.#resources.delete(entry.id);
+  }
+  #stageRead(entry, result) {
+    if (entry.bufferedRead !== void 0) {
+      throw new Error(`resource ${entry.id} already has a buffered read`);
+    }
+    entry.bufferedRead = { data: result.data, eof: result.eof, offset: 0 };
+    this.#retainReadBuffer(result.data.byteLength);
+  }
+  #takeBufferedRead(entry, maximumBytes) {
+    const buffered = entry.bufferedRead;
+    const remaining = buffered.data.byteLength - buffered.offset;
+    const bytesRead = Math.min(remaining, maximumBytes);
+    const finishesBuffer = bytesRead === remaining;
+    let data;
+    if (buffered.offset === 0 && finishesBuffer) {
+      data = buffered.data;
+    } else {
+      this.#retainReadBuffer(bytesRead);
+      try {
+        data = buffered.data.slice(buffered.offset, buffered.offset + bytesRead);
+      } finally {
+        this.#releaseReadBuffer(bytesRead);
+      }
+    }
+    buffered.offset += bytesRead;
+    if (finishesBuffer) {
+      this.#releaseReadBuffer(buffered.data.byteLength);
+      delete entry.bufferedRead;
+    }
+    return { data, eof: finishesBuffer && buffered.eof };
+  }
+  #discardBufferedRead(entry) {
+    if (entry.bufferedRead === void 0) return;
+    this.#releaseReadBuffer(entry.bufferedRead.data.byteLength);
+    delete entry.bufferedRead;
+  }
+  #retainReadBuffer(bytes) {
+    this.#currentReadBufferBytes += bytes;
+    this.#highWaterReadBufferBytes = Math.max(
+      this.#highWaterReadBufferBytes,
+      this.#currentReadBufferBytes
+    );
+  }
+  #releaseReadBuffer(bytes) {
+    this.#currentReadBufferBytes -= bytes;
+  }
+};
+function isResourceResponse(message) {
+  return message.kind === "described" || message.kind === "read-granted" || message.kind === "write-granted" || message.kind === "ok" || message.kind === "error" || message.kind === "read" && "result" in message;
+}
+function serveResourceRpc(endpoint, host) {
+  let closed = false;
+  const onMessage = ({ data }) => {
+    if (closed || isResourceResponse(data)) return;
+    void host.handle(data).then((response) => {
+      if (closed) return;
+      const transfer = response.kind === "read" ? [response.result.data] : void 0;
+      endpoint.postMessage(response, transfer);
+    });
+  };
+  endpoint.addEventListener("message", onMessage);
+  endpoint.start?.();
+  return {
+    dispose() {
+      if (closed) return;
+      closed = true;
+      endpoint.removeEventListener("message", onMessage);
+      endpoint.close?.();
+    }
+  };
+}
+
+// ../../packages/core/src/clock.ts
+var RESOLUTION_SAMPLE_LIMIT = 1e5;
+var RESOLUTION_CHANGES_REQUIRED = 32;
+var MICROSECONDS_PER_MILLISECOND = 1e3;
+function requireFiniteNonNegative(value, name) {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${name} must be a finite, non-negative number`);
+  }
+  return value;
+}
+function nextSequence(current) {
+  if (current >= Number.MAX_SAFE_INTEGER) {
+    throw new RangeError("clock sequence exhausted Number.MAX_SAFE_INTEGER");
+  }
+  return current + 1;
+}
+function measureResolutionUs(readMilliseconds) {
+  const originMs = readMilliseconds();
+  let previousMs = originMs;
+  let minimumUs = Number.POSITIVE_INFINITY;
+  let changes = 0;
+  for (let sample = 0; sample < RESOLUTION_SAMPLE_LIMIT && changes < RESOLUTION_CHANGES_REQUIRED; sample += 1) {
+    const currentMs = readMilliseconds();
+    const deltaUs = (currentMs - previousMs) * MICROSECONDS_PER_MILLISECOND;
+    if (deltaUs > 0) {
+      minimumUs = Math.min(minimumUs, deltaUs);
+      changes += 1;
+    }
+    previousMs = currentMs;
+  }
+  return {
+    originMs,
+    resolutionUs: Number.isFinite(minimumUs) ? Math.max(1, minimumUs) : 1
+  };
+}
+var CallbackDisposable = class {
+  #callback;
+  constructor(callback) {
+    this.#callback = callback;
+  }
+  dispose() {
+    const callback = this.#callback;
+    this.#callback = void 0;
+    callback?.();
+  }
+};
+var RealClock = class {
+  resolutionUs;
+  #originMs;
+  #sequence = 0;
+  constructor() {
+    const measured = measureResolutionUs(() => performance.now());
+    this.#originMs = measured.originMs;
+    this.resolutionUs = measured.resolutionUs;
+  }
+  monotonicUs() {
+    return (performance.now() - this.#originMs) * MICROSECONDS_PER_MILLISECOND;
+  }
+  wallClockUnixMs() {
+    return Date.now();
+  }
+  nextSequence() {
+    this.#sequence = nextSequence(this.#sequence);
+    return this.#sequence;
+  }
+  sleep(ms, signal) {
+    requireFiniteNonNegative(ms, "delay");
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason);
+    }
+    return new Promise((resolve, reject) => {
+      const handle = setTimeout(() => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      const abort = () => {
+        clearTimeout(handle);
+        signal?.removeEventListener("abort", abort);
+        reject(signal?.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+    });
+  }
+  timer(ms, fn) {
+    requireFiniteNonNegative(ms, "delay");
+    const handle = setTimeout(fn, ms);
+    return new CallbackDisposable(() => clearTimeout(handle));
+  }
+  interval(ms, fn) {
+    requireFiniteNonNegative(ms, "delay");
+    const handle = setInterval(fn, ms);
+    return new CallbackDisposable(() => clearInterval(handle));
+  }
+};
+
 // ../../packages/core/src/events.ts
 var DEFAULT_MAXIMUM_LOSSLESS_QUEUE_DEPTH = 1024;
-function requireNonNegativeSafeInteger(value, name) {
+function requireNonNegativeSafeInteger2(value, name) {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`${name} must be a non-negative safe integer`);
   }
@@ -253,6 +1192,7 @@ function overflowError(maximumLosslessQueueDepth) {
   return {
     code: "rpc.subscriber-overflow",
     message: `subscriber exceeded ${maximumLosslessQueueDepth} pending lossless events`,
+    responsibility: "host",
     retryability: "after-recovery",
     details: { maximumLosslessQueueDepth }
   };
@@ -276,11 +1216,11 @@ var SessionEventDelivery = class {
   constructor(options) {
     this.#options = {
       ...options,
-      maximumLosslessQueueDepth: requireNonNegativeSafeInteger(
+      maximumLosslessQueueDepth: requireNonNegativeSafeInteger2(
         options.maximumLosslessQueueDepth,
         "maximumLosslessQueueDepth"
       ),
-      maximumReplayCount: requireNonNegativeSafeInteger(
+      maximumReplayCount: requireNonNegativeSafeInteger2(
         options.maximumReplayCount,
         "maximumReplayCount"
       )
@@ -290,7 +1230,7 @@ var SessionEventDelivery = class {
     if (this.#subscribers.has(subscriptionId)) {
       throw new Error(`subscription ${subscriptionId} already exists`);
     }
-    const replayLast = requireNonNegativeSafeInteger(options.replayLast ?? 0, "replayLast");
+    const replayLast = requireNonNegativeSafeInteger2(options.replayLast ?? 0, "replayLast");
     if (replayLast > this.#options.maximumReplayCount) {
       throw new RangeError(
         `replayLast ${replayLast} exceeds maximumReplayCount ${this.#options.maximumReplayCount}`
@@ -454,6 +1394,7 @@ function workerLostPdrError(cause) {
   return {
     code: "session.worker-lost",
     message: "the session worker was lost; reconnect is required",
+    responsibility: "operation",
     retryability: "after-reconnect",
     ...cause instanceof Error ? {
       platformCause: {
@@ -850,833 +1791,6 @@ var DeviceSessionRpcClient = class {
     }
   }
 };
-
-// src/lifecycle.ts
-function installBrowserReleaseHooks(options) {
-  let released = false;
-  const release = () => {
-    if (released) return;
-    released = true;
-    void options.release();
-  };
-  options.window.addEventListener("beforeunload", release);
-  return {
-    dispose: () => options.window.removeEventListener("beforeunload", release)
-  };
-}
-
-// src/hex-window.ts
-var HEX_OCTETS = Object.freeze(Array.from(
-  { length: 256 },
-  (_, value) => value.toString(16).padStart(2, "0")
-));
-var HexWindow = class {
-  #maximumBytes;
-  #records = [];
-  #retainedBytes = 0;
-  constructor(maximumBytes = 32 * 1024) {
-    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
-      throw new RangeError("maximumBytes must be a positive safe integer");
-    }
-    this.#maximumBytes = maximumBytes;
-  }
-  append(record2) {
-    const omitted = Math.max(0, record2.bytes.byteLength - this.#maximumBytes);
-    const retained = omitted === 0 ? record2.bytes : record2.bytes.subarray(omitted);
-    const prefix = `${record2.sequence.toString().padStart(6)} ${record2.tUs.toFixed(0).padStart(10)} ${record2.direction.toUpperCase()}`;
-    const text = `${prefix}${omitted === 0 ? "" : ` \u2026 ${omitted} earlier bytes not rendered`} ${hex(retained)}`;
-    this.#records.push({ retainedBytes: retained.byteLength, text });
-    this.#retainedBytes += retained.byteLength;
-    while (this.#retainedBytes > this.#maximumBytes && this.#records.length > 1) {
-      const removed = this.#records.shift();
-      if (removed !== void 0) this.#retainedBytes -= removed.retainedBytes;
-    }
-    return `${this.#records.map(({ text: line }) => line).join("\n")}
-`;
-  }
-};
-function hex(bytes) {
-  let rendered = "";
-  for (let index = 0; index < bytes.byteLength; index += 1) {
-    if (index > 0) rendered += " ";
-    rendered += HEX_OCTETS[bytes[index]];
-  }
-  return rendered;
-}
-
-// src/package-storage.ts
-var PACKAGES = "packages";
-function request(source) {
-  return new Promise((resolve, reject) => {
-    source.addEventListener("success", () => resolve(source.result), { once: true });
-    source.addEventListener(
-      "error",
-      () => reject(source.error ?? new Error("IndexedDB package request failed")),
-      { once: true }
-    );
-  });
-}
-function transactionDone(transaction) {
-  return new Promise((resolve, reject) => {
-    transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener(
-      "abort",
-      () => reject(transaction.error ?? new Error("IndexedDB package transaction aborted")),
-      { once: true }
-    );
-    transaction.addEventListener(
-      "error",
-      () => reject(transaction.error ?? new Error("IndexedDB package transaction failed")),
-      { once: true }
-    );
-  });
-}
-async function openDatabase(factory, name) {
-  const opening = factory.open(name, 1);
-  opening.addEventListener("upgradeneeded", () => {
-    const database = opening.result;
-    if (!database.objectStoreNames.contains(PACKAGES)) {
-      database.createObjectStore(PACKAGES, { autoIncrement: true });
-    }
-  });
-  return await request(opening);
-}
-function storedBytes(value, id) {
-  if (!(value instanceof Uint8Array)) {
-    throw new Error(`browser.package-storage.invalid-record: stored package ${id} is not raw bytes`);
-  }
-  return Uint8Array.from(value);
-}
-function numericKey(key) {
-  if (typeof key !== "number" || !Number.isSafeInteger(key) || key < 1) {
-    throw new Error("browser.package-storage.invalid-key: IndexedDB did not return a positive integer key");
-  }
-  return key;
-}
-var BrowserPackageStore = class {
-  #database;
-  constructor(factory, databaseName = "protodriver-imported-packages") {
-    this.#database = openDatabase(factory, databaseName);
-  }
-  async add(bytes) {
-    const database = await this.#database;
-    const transaction = database.transaction(PACKAGES, "readwrite", { durability: "strict" });
-    const done = transactionDone(transaction);
-    try {
-      const key = await request(transaction.objectStore(PACKAGES).add(Uint8Array.from(bytes)));
-      await done;
-      return numericKey(key);
-    } catch (cause) {
-      try {
-        transaction.abort();
-      } catch {
-      }
-      await done.catch(() => void 0);
-      throw cause;
-    }
-  }
-  async list() {
-    const database = await this.#database;
-    const transaction = database.transaction(PACKAGES, "readonly");
-    const done = transactionDone(transaction);
-    const store = transaction.objectStore(PACKAGES);
-    const [keys, values] = await Promise.all([request(store.getAllKeys()), request(store.getAll())]);
-    await done;
-    if (keys.length !== values.length) {
-      throw new Error("browser.package-storage.invalid-record: package keys and values differ in length");
-    }
-    return Object.freeze(keys.map((key, index) => {
-      const id = numericKey(key);
-      return Object.freeze({ id, byteLength: storedBytes(values[index], id).byteLength });
-    }));
-  }
-  async read(id) {
-    const database = await this.#database;
-    const transaction = database.transaction(PACKAGES, "readonly");
-    const done = transactionDone(transaction);
-    const value = await request(transaction.objectStore(PACKAGES).get(id));
-    await done;
-    return value === void 0 ? null : storedBytes(value, id);
-  }
-  async remove(id) {
-    const database = await this.#database;
-    const transaction = database.transaction(PACKAGES, "readwrite", { durability: "strict" });
-    const done = transactionDone(transaction);
-    await request(transaction.objectStore(PACKAGES).delete(id));
-    await done;
-  }
-};
-
-// ../../packages/contracts/src/limits.ts
-var DEFAULT_CAPTURE_CAPACITY_POLICY = Object.freeze({
-  supportedPayloadBytes: 1048576,
-  measuredSourceCutBytes: 9472207,
-  measuredCompleteBytes: 64737185,
-  headroomNumerator: 11,
-  headroomDenominator: 10,
-  maximumQueueBytes: 4 * 1024 * 1024,
-  maximumRetainedBytes: Math.ceil(64737185 * 11 / 10)
-});
-var DEFAULT_HOST_RESOURCE_LIMITS = {
-  maximumBufferedBytesPerChannel: 4 * 1024 * 1024,
-  maximumConcurrentTimers: 1024,
-  maximumTransferWindowBytes: 4 * 1024 * 1024,
-  maximumChunksInFlight: 64,
-  maximumRpcMessageBytes: 8 * 1024 * 1024,
-  maximumResourceChunkBytes: 1024 * 1024,
-  maximumDiagnosticBufferBytes: 2 * 1024 * 1024,
-  maximumEventReplayCount: 256,
-  maximumLosslessQueueDepth: 1024,
-  maximumRetainedOperationResults: 64,
-  maximumClientsPerSession: 4,
-  maximumPendingRpcCalls: 256,
-  maximumSubscriptionsPerClient: 16,
-  maximumDiagnosticSubscribers: 4,
-  maximumConcurrentOperations: 32,
-  maximumOpenResources: 64,
-  maximumOutstandingBrokerCalls: 64,
-  maximumCaptureParts: 4096,
-  // The largest of three complete 1 MiB Device 3 captures was 64,737,185
-  // encoded bytes. Retain 10% measured-population variance headroom, then add
-  // the separately reserved browser capture queue to form the host envelope.
-  maximumCaptureInMemoryBytes: DEFAULT_CAPTURE_CAPACITY_POLICY.maximumQueueBytes + DEFAULT_CAPTURE_CAPACITY_POLICY.maximumRetainedBytes
-};
-
-// ../../packages/core/src/capture-path.ts
-var CapturePartNameError = class extends Error {
-  rule;
-  constructor(name, rule) {
-    super(`capture part name ${JSON.stringify(name)} rejected by ${rule} rule`);
-    this.name = "CapturePartNameError";
-    this.rule = rule;
-  }
-};
-var MAX_CAPTURE_PART_NAME_LENGTH = 255;
-var PORTABLE_CAPTURE_PART_NAME = /^[A-Za-z0-9._-]+$/;
-var WINDOWS_RESERVED_DEVICE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
-function assertCapturePartName(name) {
-  if (name.length === 0 || name.length > MAX_CAPTURE_PART_NAME_LENGTH) {
-    throw new CapturePartNameError(name, "length");
-  }
-  if (!PORTABLE_CAPTURE_PART_NAME.test(name)) {
-    throw new CapturePartNameError(name, "character-set");
-  }
-  if (name.startsWith(".")) {
-    throw new CapturePartNameError(name, "leading-dot");
-  }
-  if (name.endsWith(".")) {
-    throw new CapturePartNameError(name, "trailing-dot");
-  }
-  const basename = name.split(".", 1)[0];
-  if (basename !== void 0 && WINDOWS_RESERVED_DEVICE.test(basename)) {
-    throw new CapturePartNameError(name, "reserved-device");
-  }
-}
-
-// ../../packages/core/src/capture-rpc.ts
-function causeSnapshot(cause) {
-  if (!(cause instanceof Error)) return void 0;
-  return snapshotPlatformCause(cause);
-}
-function captureError(code, message, cause) {
-  const platformCause = causeSnapshot(cause);
-  return {
-    code,
-    message,
-    retryability: "no",
-    ...platformCause === void 0 ? {} : { platformCause }
-  };
-}
-var CaptureDestinationRegistry = class {
-  #destinations = /* @__PURE__ */ new Map();
-  #maximumPartsPerDestination;
-  #nextId = 1;
-  constructor(maximumPartsPerDestination = DEFAULT_PHASE_ONE_LIMITS.maximumCaptureParts) {
-    this.#maximumPartsPerDestination = maximumPartsPerDestination;
-  }
-  get size() {
-    return this.#destinations.size;
-  }
-  async register(destination, sessionId) {
-    const id = `capture-destination-${this.#nextId++}`;
-    this.#destinations.set(id, { id, destination, sessionId, partsOpened: 0 });
-    return id;
-  }
-  async release(id) {
-    this.#destinations.delete(id);
-  }
-  async handle(request2, sessionId) {
-    const entry = this.#destinations.get(request2.destinationId);
-    if (entry === void 0 || entry.sessionId !== sessionId) {
-      return {
-        kind: "error",
-        error: captureError(
-          "capture.destination-unknown",
-          `capture destination ${request2.destinationId} is not registered`
-        )
-      };
-    }
-    try {
-      switch (request2.kind) {
-        case "open-part": {
-          assertCapturePartName(request2.name);
-          if (entry.partsOpened >= this.#maximumPartsPerDestination) {
-            throw new HostResourceLimitError(
-              "capture.part-limit",
-              "maximumCaptureParts",
-              this.#maximumPartsPerDestination,
-              entry.partsOpened + 1,
-              "capture"
-            );
-          }
-          entry.partsOpened += 1;
-          let resourceId;
-          try {
-            resourceId = await entry.destination.openPart(
-              request2.name,
-              request2.contentType === void 0 ? void 0 : { contentType: request2.contentType }
-            );
-          } catch (cause) {
-            entry.partsOpened -= 1;
-            throw cause;
-          }
-          return {
-            kind: "part-opened",
-            resourceId
-          };
-        }
-        case "commit-destination":
-          await entry.destination.commit();
-          return { kind: "ok" };
-        case "abort-destination":
-          await entry.destination.abort(request2.error);
-          return { kind: "ok" };
-      }
-    } catch (cause) {
-      if (cause instanceof HostResourceLimitError) {
-        return { kind: "error", error: cause.error };
-      }
-      return {
-        kind: "error",
-        error: captureError(
-          `capture.${request2.kind}-failed`,
-          cause instanceof Error ? cause.message : String(cause),
-          cause
-        )
-      };
-    }
-  }
-};
-function isCaptureResponse(message) {
-  return message.kind === "part-opened" || message.kind === "ok" || message.kind === "error";
-}
-function serveCaptureDestinationRpc(endpoint, registry, sessionId) {
-  let closed = false;
-  const onMessage = ({ data }) => {
-    if (closed || isCaptureResponse(data)) return;
-    void registry.handle(data, sessionId).then((response) => {
-      if (!closed) endpoint.postMessage(response);
-    });
-  };
-  endpoint.addEventListener("message", onMessage);
-  endpoint.start?.();
-  return {
-    dispose() {
-      if (closed) return;
-      closed = true;
-      endpoint.removeEventListener("message", onMessage);
-      endpoint.close?.();
-    }
-  };
-}
-
-// ../../packages/core/src/resources.ts
-var ResourceBrokerError = class extends Error {
-  error;
-  constructor(error) {
-    super(error.message);
-    this.name = "ResourceBrokerError";
-    this.error = error;
-  }
-};
-var PartialResourceWriteError = class extends Error {
-  knownAcceptedBytes;
-  requestedBytes;
-  constructor(knownAcceptedBytes, requestedBytes, message = "resource write was partial") {
-    super(message);
-    this.name = "PartialResourceWriteError";
-    this.knownAcceptedBytes = requireNonNegativeSafeInteger2(knownAcceptedBytes, "knownAcceptedBytes");
-    this.requestedBytes = requireNonNegativeSafeInteger2(requestedBytes, "requestedBytes");
-    if (knownAcceptedBytes >= requestedBytes) {
-      throw new RangeError("a partial write must accept fewer bytes than requested");
-    }
-  }
-};
-function requireNonNegativeSafeInteger2(value, name) {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new RangeError(`${name} must be a non-negative safe integer`);
-  }
-  return value;
-}
-function pdrError(code, message, details) {
-  return {
-    code,
-    message,
-    retryability: "no",
-    ...details === void 0 ? {} : { details }
-  };
-}
-function causeSnapshot2(cause) {
-  if (!(cause instanceof Error)) return void 0;
-  return snapshotPlatformCause(cause);
-}
-function failure(cause, operation) {
-  if (cause instanceof ResourceBrokerError) return cause.error;
-  if (cause instanceof PartialResourceWriteError) {
-    const base2 = pdrError(
-      "resource.partial-write",
-      cause.message,
-      {
-        knownAcceptedBytes: cause.knownAcceptedBytes,
-        requestedBytes: cause.requestedBytes
-      }
-    );
-    const platformCause2 = causeSnapshot2(cause);
-    return platformCause2 === void 0 ? base2 : { ...base2, platformCause: platformCause2 };
-  }
-  const base = pdrError(
-    `resource.${operation}-failed`,
-    cause instanceof Error ? cause.message : String(cause)
-  );
-  const platformCause = causeSnapshot2(cause);
-  return platformCause === void 0 ? base : { ...base, platformCause };
-}
-function responseError(callId, error) {
-  return { kind: "error", callId, error };
-}
-function sameSession(scope, sessionId) {
-  return scope.kind !== "host" && scope.sessionId === sessionId;
-}
-var ResourceBrokerHost = class {
-  #namespace = crypto.randomUUID();
-  #resources = /* @__PURE__ */ new Map();
-  #callsById = /* @__PURE__ */ new Map();
-  #callByResource = /* @__PURE__ */ new Map();
-  #maximumOpenResources;
-  #maximumOutstandingCalls;
-  #maximumChunkBytes;
-  #nextResource = 1;
-  #nextRegistrationOrder = 1;
-  #currentReadBufferBytes = 0;
-  #highWaterReadBufferBytes = 0;
-  constructor(options = {}) {
-    this.#maximumOpenResources = options.maximumOpenResources ?? DEFAULT_PHASE_ONE_LIMITS.maximumOpenResources;
-    this.#maximumOutstandingCalls = options.maximumOutstandingCalls ?? DEFAULT_PHASE_ONE_LIMITS.maximumOutstandingBrokerCalls;
-    this.#maximumChunkBytes = options.maximumChunkBytes ?? DEFAULT_PHASE_ONE_LIMITS.maximumResourceChunkBytes;
-  }
-  get metrics() {
-    return {
-      currentReadBufferBytes: this.#currentReadBufferBytes,
-      highWaterReadBufferBytes: this.#highWaterReadBufferBytes,
-      openResources: this.#resources.size,
-      callsInFlight: this.#callsById.size
-    };
-  }
-  async registerSource(source, scope) {
-    return this.#register({ kind: "source", source, scope });
-  }
-  async registerSink(sink, scope) {
-    return this.#register({ kind: "sink", sink, scope });
-  }
-  async outstanding() {
-    return [...this.#resources.values()].filter(({ scope }) => scope.kind === "host").sort((left, right) => left.registrationOrder - right.registrationOrder).map(({ id }) => id);
-  }
-  async handle(request2) {
-    const callId = request2.call.callId;
-    if (this.#callsById.has(callId)) {
-      return responseError(callId, pdrError(
-        "resource.call-id-in-use",
-        `broker call id ${callId} is already in flight`
-      ));
-    }
-    if (request2.kind === "cancel") return this.#cancel(request2);
-    if (request2.kind === "close" && !this.#resources.has(request2.id)) {
-      return { kind: "ok", callId };
-    }
-    const entry = this.#resources.get(request2.id);
-    if (entry === void 0) {
-      return responseError(callId, pdrError(
-        "resource.unknown-id",
-        `resource ${request2.id} is not open`
-      ));
-    }
-    if (entry.readGrant && request2.kind !== "release-read" && request2.call.readGrantId !== entry.readGrant.id) {
-      return responseError(callId, pdrError("resource.delegated", "source is exclusively delegated to " + entry.readGrant.operationId));
-    }
-    if (request2.call.readGrantId !== void 0 && request2.call.readGrantId !== entry.readGrant?.id) {
-      return responseError(callId, pdrError("resource.stale-grant", "read delegation is unavailable"));
-    }
-    if (request2.kind === "read" && request2.maximumBytes > this.#maximumChunkBytes) {
-      return responseError(callId, new HostResourceLimitError(
-        "resource.chunk-too-large",
-        "maximumResourceChunkBytes",
-        this.#maximumChunkBytes,
-        request2.maximumBytes,
-        "resource"
-      ).error);
-    }
-    if (request2.kind === "write" && request2.data.byteLength > this.#maximumChunkBytes) {
-      return responseError(callId, new HostResourceLimitError(
-        "resource.chunk-too-large",
-        "maximumResourceChunkBytes",
-        this.#maximumChunkBytes,
-        request2.data.byteLength,
-        "resource"
-      ).error);
-    }
-    const active = this.#callByResource.get(request2.id);
-    if (active !== void 0) {
-      return responseError(callId, pdrError(
-        "resource.call-in-flight",
-        `resource ${request2.id} already has call ${active} in flight`,
-        { resourceId: request2.id, holderCallId: active }
-      ));
-    }
-    if (this.#callsById.size >= this.#maximumOutstandingCalls) {
-      return responseError(callId, new HostResourceLimitError(
-        "resource.outstanding-call-limit",
-        "maximumOutstandingBrokerCalls",
-        this.#maximumOutstandingCalls,
-        this.#callsById.size + 1,
-        "resource"
-      ).error);
-    }
-    const pending = {
-      cancelled: false,
-      settled: false
-    };
-    this.#callsById.set(callId, pending);
-    this.#callByResource.set(request2.id, callId);
-    try {
-      const response = await this.#execute(entry, request2);
-      pending.settled = true;
-      if (pending.cancelled && request2.kind === "read" && !entry.readGrant) {
-        if (response.kind === "read") this.#stageRead(entry, response.result);
-        return responseError(callId, pdrError(
-          "resource.cancelled",
-          `resource call ${callId} was cancelled before completion`
-        ));
-      }
-      return response;
-    } catch (cause) {
-      pending.settled = true;
-      if (pending.cancelled && request2.kind === "read") {
-        return responseError(callId, pdrError(
-          "resource.cancelled",
-          `resource call ${callId} was cancelled before completion`
-        ));
-      }
-      return responseError(callId, failure(cause, request2.kind));
-    } finally {
-      this.#callsById.delete(callId);
-      this.#callByResource.delete(request2.id);
-    }
-  }
-  async endOperation(sessionId, operationId) {
-    this.#throwCloseFailures(await this.#closeMatching(({ scope }) => scope.kind === "operation" && scope.sessionId === sessionId && scope.operationId === operationId));
-  }
-  async endSession(sessionId) {
-    const failures = [
-      ...await this.#closeMatching(({ scope }) => scope.kind === "operation" && sameSession(scope, sessionId)),
-      ...await this.#closeMatching(({ scope }) => scope.kind === "session" && sameSession(scope, sessionId))
-    ];
-    this.#throwCloseFailures(failures);
-    return { outstandingHostResources: await this.outstanding() };
-  }
-  async shutdown() {
-    const failures = [
-      ...await this.#closeMatching(({ scope }) => scope.kind === "operation"),
-      ...await this.#closeMatching(({ scope }) => scope.kind === "session")
-    ];
-    this.#throwCloseFailures(failures);
-    return { outstandingHostResources: await this.outstanding() };
-  }
-  async closeResource(id) {
-    const entry = this.#resources.get(id);
-    if (entry === void 0) return;
-    if (this.#callByResource.has(id)) {
-      throw new ResourceBrokerError(pdrError(
-        "resource.call-in-flight",
-        `resource ${id} has a call in flight`
-      ));
-    }
-    await this.#closeEntry(entry);
-  }
-  #register(options) {
-    if (this.#resources.size >= this.#maximumOpenResources) {
-      throw new HostResourceLimitError(
-        "resource.open-limit",
-        "maximumOpenResources",
-        this.#maximumOpenResources,
-        this.#resources.size + 1,
-        "resource"
-      );
-    }
-    const id = `resource-${this.#namespace}-${this.#nextResource++}`;
-    this.#resources.set(id, {
-      id,
-      kind: options.kind,
-      scope: options.scope,
-      registrationOrder: this.#nextRegistrationOrder++,
-      ...options.source === void 0 ? {} : { source: options.source },
-      ...options.sink === void 0 ? {} : { sink: options.sink }
-    });
-    return id;
-  }
-  #cancel(request2) {
-    const pending = this.#callsById.get(request2.targetCallId);
-    if (pending !== void 0 && !pending.settled) pending.cancelled = true;
-    return { kind: "ok", callId: request2.call.callId };
-  }
-  async #execute(entry, request2) {
-    const callId = request2.call.callId;
-    switch (request2.kind) {
-      case "grant-write": {
-        if (entry.kind !== "sink") throw new ResourceBrokerError(pdrError("resource.wrong-kind", "streamed output requires a sink"));
-        if (entry.scope.kind === "operation" && entry.scope.operationId !== request2.operationId)
-          throw new ResourceBrokerError(pdrError("resource.wrong-owner", "sink belongs to another operation"));
-        if (typeof request2.operationId !== "string" || !request2.operationId || request2.operationId.length > 256 || !Number.isSafeInteger(request2.maximumBytes) || request2.maximumBytes < 1)
-          throw new ResourceBrokerError(pdrError("resource.write-grant", "finite operation output extent required"));
-        if (entry.written || entry.writeGrant) throw new ResourceBrokerError(pdrError("resource.destination-used", "streamed result requires a fresh destination"));
-        entry.writeGrant = { id: callId, maximumBytes: request2.maximumBytes, submitted: 0 };
-        return { kind: "write-granted", callId, grantId: callId };
-      }
-      case "grant-stream":
-      case "grant-read": {
-        if (entry.kind !== "source") throw new ResourceBrokerError(pdrError("resource.wrong-kind", "bounded input requires a source"));
-        if (entry.scope.kind === "operation" && entry.scope.operationId !== request2.operationId)
-          throw new ResourceBrokerError(pdrError("resource.wrong-owner", "source belongs to another operation"));
-        const maximumBytes = requireNonNegativeSafeInteger2(request2.maximumBytes, "maximumBytes");
-        if (request2.kind === "grant-read" && maximumBytes > 65537 || maximumBytes >= Number.MAX_SAFE_INTEGER || !request2.operationId || request2.operationId.length > 256)
-          throw new ResourceBrokerError(pdrError("resource.read-grant", "bounded operation read grant required"));
-        if (entry.readGrant) throw new ResourceBrokerError(pdrError("resource.delegated", "source already delegated"));
-        const grant = {
-          id: callId,
-          operationId: request2.operationId,
-          maximumBytes,
-          ...request2.kind === "grant-stream" ? { streaming: true } : {},
-          byteLength: entry.source.byteLength,
-          seekable: entry.source.seek !== void 0,
-          origin: entry.source.origin ?? "other",
-          scope: entry.scope.kind
-        };
-        entry.readGrant = grant;
-        entry.grantedReadBytes = 0;
-        entry.rewound = false;
-        return { kind: "read-granted", callId, grant };
-      }
-      case "release-read": {
-        if (!entry.readGrant || entry.readGrant.id !== request2.grantId)
-          throw new ResourceBrokerError(pdrError("resource.stale-grant", "read delegation is unavailable"));
-        delete entry.readGrant;
-        delete entry.grantedReadBytes;
-        delete entry.rewound;
-        delete entry.streamOffset;
-        if (entry.scope.kind === "operation") await this.#closeEntry(entry, callId);
-        return { kind: "ok", callId };
-      }
-      case "describe":
-        return {
-          kind: "described",
-          callId,
-          descriptor: entry.kind === "source" ? {
-            byteLength: entry.source.byteLength,
-            seekable: entry.source.seek !== void 0
-          } : { byteLength: void 0, seekable: false }
-        };
-      case "read": {
-        if (entry.kind !== "source") throw new ResourceBrokerError(pdrError(
-          "resource.wrong-kind",
-          `resource ${entry.id} is not a source`
-        ));
-        const maximumBytes = requireNonNegativeSafeInteger2(request2.maximumBytes, "maximumBytes");
-        if (maximumBytes === 0) throw new RangeError("maximumBytes must be greater than zero");
-        if (entry.readGrant) {
-          if (!entry.rewound || (entry.readGrant.streaming ? maximumBytes > 256 || maximumBytes > entry.readGrant.maximumBytes + 1 - (entry.streamOffset ?? 0) : maximumBytes > entry.readGrant.maximumBytes - entry.grantedReadBytes))
-            throw new ResourceBrokerError(pdrError("resource.read-grant-exhausted", "read exceeds the reserved operation range or has no origin"));
-          entry.grantedReadBytes += maximumBytes;
-        }
-        if (entry.bufferedRead !== void 0) {
-          return { kind: "read", callId, result: this.#takeBufferedRead(entry, maximumBytes) };
-        }
-        const workspace = new Uint8Array(maximumBytes);
-        this.#retainReadBuffer(maximumBytes);
-        try {
-          const result = await entry.source.read(workspace);
-          const bytesRead = requireNonNegativeSafeInteger2(result.bytesRead, "bytesRead");
-          if (bytesRead > maximumBytes) {
-            throw new RangeError(`source reported ${bytesRead} bytes into a ${maximumBytes}-byte buffer`);
-          }
-          if (entry.readGrant) entry.grantedReadBytes -= maximumBytes - bytesRead;
-          if (entry.readGrant?.streaming) entry.streamOffset = (entry.streamOffset ?? 0) + bytesRead;
-          let data;
-          if (bytesRead === maximumBytes) {
-            data = workspace.buffer;
-          } else {
-            this.#retainReadBuffer(bytesRead);
-            try {
-              data = workspace.buffer.slice(0, bytesRead);
-            } finally {
-              this.#releaseReadBuffer(bytesRead);
-            }
-          }
-          return { kind: "read", callId, result: { data, eof: result.eof } };
-        } finally {
-          this.#releaseReadBuffer(maximumBytes);
-        }
-      }
-      case "seek":
-        if (entry.kind !== "source") throw new ResourceBrokerError(pdrError(
-          "resource.wrong-kind",
-          `resource ${entry.id} is not a source`
-        ));
-        if (entry.source.seek === void 0) throw new ResourceBrokerError(pdrError(
-          "resource.not-seekable",
-          `resource ${entry.id} is not seekable`
-        ));
-        if (entry.readGrant && !entry.readGrant.streaming && (request2.offset !== 0 || entry.rewound))
-          throw new ResourceBrokerError(pdrError("resource.read-origin", "bounded grant permits exactly one initial rewind"));
-        if (entry.readGrant?.streaming && (!Number.isSafeInteger(request2.offset) || request2.offset < 0 || request2.offset > entry.readGrant.maximumBytes))
-          throw new ResourceBrokerError(pdrError("resource.read-origin", "stream seek exceeds delegated source domain"));
-        this.#discardBufferedRead(entry);
-        await entry.source.seek(requireNonNegativeSafeInteger2(request2.offset, "offset"));
-        if (entry.readGrant) entry.rewound = true;
-        if (entry.readGrant?.streaming) entry.streamOffset = request2.offset;
-        return { kind: "ok", callId };
-      case "write":
-        if (entry.kind !== "sink") throw new ResourceBrokerError(pdrError(
-          "resource.wrong-kind",
-          `resource ${entry.id} is not a sink`
-        ));
-        if (entry.writeGrant) {
-          const g = entry.writeGrant;
-          if (g.failed || request2.call.writeGrantId !== g.id || request2.data.byteLength > 256 || request2.data.byteLength > g.maximumBytes - g.submitted)
-            throw new ResourceBrokerError(pdrError("resource.write-grant", "write is outside its append grant"));
-          g.submitted += request2.data.byteLength;
-        } else if (request2.call.writeGrantId) throw new ResourceBrokerError(pdrError("resource.stale-grant", "write grant is unavailable"));
-        entry.written = true;
-        try {
-          await entry.sink.write(new Uint8Array(request2.data));
-        } catch (cause) {
-          if (entry.writeGrant) entry.writeGrant.failed = true;
-          throw cause;
-        }
-        return { kind: "ok", callId };
-      case "close":
-        await this.#closeEntry(entry, callId);
-        return { kind: "ok", callId };
-    }
-  }
-  async #closeMatching(predicate) {
-    const entries = [...this.#resources.values()].filter(predicate).sort((left, right) => left.registrationOrder - right.registrationOrder);
-    const failures = [];
-    for (const entry of entries) {
-      try {
-        await this.#closeEntry(entry);
-      } catch (cause) {
-        failures.push(cause);
-      }
-    }
-    return failures;
-  }
-  #throwCloseFailures(failures) {
-    if (failures.length > 0) {
-      throw new AggregateError(failures, "one or more resources failed to close");
-    }
-  }
-  async #closeEntry(entry, allowedCallId) {
-    if (!this.#resources.has(entry.id)) return;
-    const activeCallId = this.#callByResource.get(entry.id);
-    if (activeCallId !== void 0 && activeCallId !== allowedCallId) {
-      throw new ResourceBrokerError(pdrError(
-        "resource.call-in-flight",
-        `resource ${entry.id} has a call in flight`
-      ));
-    }
-    await (entry.kind === "source" ? entry.source.close() : entry.sink.close());
-    this.#discardBufferedRead(entry);
-    this.#resources.delete(entry.id);
-  }
-  #stageRead(entry, result) {
-    if (entry.bufferedRead !== void 0) {
-      throw new Error(`resource ${entry.id} already has a buffered read`);
-    }
-    entry.bufferedRead = { data: result.data, eof: result.eof, offset: 0 };
-    this.#retainReadBuffer(result.data.byteLength);
-  }
-  #takeBufferedRead(entry, maximumBytes) {
-    const buffered = entry.bufferedRead;
-    const remaining = buffered.data.byteLength - buffered.offset;
-    const bytesRead = Math.min(remaining, maximumBytes);
-    const finishesBuffer = bytesRead === remaining;
-    let data;
-    if (buffered.offset === 0 && finishesBuffer) {
-      data = buffered.data;
-    } else {
-      this.#retainReadBuffer(bytesRead);
-      try {
-        data = buffered.data.slice(buffered.offset, buffered.offset + bytesRead);
-      } finally {
-        this.#releaseReadBuffer(bytesRead);
-      }
-    }
-    buffered.offset += bytesRead;
-    if (finishesBuffer) {
-      this.#releaseReadBuffer(buffered.data.byteLength);
-      delete entry.bufferedRead;
-    }
-    return { data, eof: finishesBuffer && buffered.eof };
-  }
-  #discardBufferedRead(entry) {
-    if (entry.bufferedRead === void 0) return;
-    this.#releaseReadBuffer(entry.bufferedRead.data.byteLength);
-    delete entry.bufferedRead;
-  }
-  #retainReadBuffer(bytes) {
-    this.#currentReadBufferBytes += bytes;
-    this.#highWaterReadBufferBytes = Math.max(
-      this.#highWaterReadBufferBytes,
-      this.#currentReadBufferBytes
-    );
-  }
-  #releaseReadBuffer(bytes) {
-    this.#currentReadBufferBytes -= bytes;
-  }
-};
-function isResourceResponse(message) {
-  return message.kind === "described" || message.kind === "read-granted" || message.kind === "write-granted" || message.kind === "ok" || message.kind === "error" || message.kind === "read" && "result" in message;
-}
-function serveResourceRpc(endpoint, host) {
-  let closed = false;
-  const onMessage = ({ data }) => {
-    if (closed || isResourceResponse(data)) return;
-    void host.handle(data).then((response) => {
-      if (closed) return;
-      const transfer = response.kind === "read" ? [response.result.data] : void 0;
-      endpoint.postMessage(response, transfer);
-    });
-  };
-  endpoint.addEventListener("message", onMessage);
-  endpoint.start?.();
-  return {
-    dispose() {
-      if (closed) return;
-      closed = true;
-      endpoint.removeEventListener("message", onMessage);
-      endpoint.close?.();
-    }
-  };
-}
 
 // src/session-worker-client.ts
 var CAPTURE_SUPPORTED_PAYLOAD_BYTES = DEFAULT_CAPTURE_CAPACITY_POLICY.supportedPayloadBytes;
@@ -2499,6 +2613,7 @@ function authoredOperationErrorText(cause) {
   if (reported !== void 0 && typeof reported.message === "string") {
     const lines = [reported.message];
     if (typeof reported.code === "string") lines.push(`Code: ${reported.code}`);
+    if (typeof reported.responsibility === "string") lines.push(`Responsibility: ${reported.responsibility}`);
     if (reported.details !== void 0) lines.push(`Details: ${stringifyGeneratedPublicJson(reported.details)}`);
     return lines.join("\n");
   }
@@ -2661,7 +2776,8 @@ function installAuthoredControls(root, loaded2, context, initiallyConnected = fa
           for (const [name, view] of fields) {
             if (view.file !== void 0) {
               const file = view.file.files?.[0];
-              if (!file) throw new Error("select a file for " + name);
+              if (!file)
+                throw browserExpectedError("web.argument.file-required", "select a file for " + name, "invocation");
               const source = await registerAuthoredFileArgument(operation, name, file, (resource) => context.registerResource(resource));
               sources.push(source);
               args[name] = source.argument;
@@ -2708,7 +2824,10 @@ function installAuthoredControls(root, loaded2, context, initiallyConnected = fa
                 cancel.disabled = false;
               }
             );
-            if (outcome.outcome !== "completed") throw new Error(stringifyGeneratedPublicJson(outcome));
+            if (outcome.outcome !== "completed") {
+              if (outcome.error !== void 0) throw Object.assign(new Error(outcome.error.message), { error: outcome.error });
+              throw browserExpectedError("web.operation.incomplete", `operation ended ${outcome.outcome} without an error`, "operation");
+            }
             output.dataset.hostResumeCount = String(resumeCount);
             output.innerHTML = operation.resultControl === null ? "Completed" : renderAuthoredResult(operation.resultControl, outcome.result);
           }
@@ -2762,7 +2881,12 @@ function readArgument(name, view) {
   try {
     return authoredArgumentValue(view.control, view.read());
   } catch (cause) {
-    throw new Error(`${name}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    throw browserExpectedError(
+      "web.argument.invalid",
+      `${name}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      "invocation",
+      cause
+    );
   }
 }
 function buildArgument(name, control, fields) {
@@ -2920,15 +3044,15 @@ async function installPackageCatalog(view) {
   });
 }
 function parseCatalog(value, catalogUrl) {
-  if (!record(value) || !Array.isArray(value.packages)) throw new Error("packages must be an array");
+  if (!record2(value) || !Array.isArray(value.packages)) throw new Error("packages must be an array");
   return Object.freeze(value.packages.map((raw, index) => {
-    if (!record(raw) || typeof raw.name !== "string" || raw.name.length === 0 || typeof raw.url !== "string" || raw.url.length === 0) {
+    if (!record2(raw) || typeof raw.name !== "string" || raw.name.length === 0 || typeof raw.url !== "string" || raw.url.length === 0) {
       throw new Error(`packages[${index}] requires non-empty name and url strings`);
     }
     return Object.freeze({ name: raw.name, url: new URL(raw.url, catalogUrl) });
   }));
 }
-function record(value) {
+function record2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -3072,7 +3196,11 @@ void installPackageCatalog({
   document,
   fetcher: (url) => fetch(url),
   beforeLoad: () => {
-    if (connected) throw new Error("disconnect before loading another device");
+    if (connected) throw browserExpectedError(
+      "web.package.connected",
+      "disconnect before loading another device",
+      "invocation"
+    );
     clearError();
     setBusy(true, "loading package");
   },
@@ -3088,13 +3216,18 @@ async function loadSelectedPackage() {
   const file = packageInput.files?.[0];
   if (file === void 0) return;
   if (connected) {
-    showError(new Error("disconnect before loading another device"));
+    showError(browserExpectedError("web.package.connected", "disconnect before loading another device", "invocation"));
     return;
   }
   clearError();
   setBusy(true, "loading package");
   try {
-    const bytes = new Uint8Array(await file.arrayBuffer());
+    let bytes;
+    try {
+      bytes = new Uint8Array(await file.arrayBuffer());
+    } catch (cause) {
+      throw browserExpectedError("web.file.read-failed", `could not read ${file.name}`, "host", cause);
+    }
     await loadAndRememberPackage2(bytes);
   } catch (cause) {
     clearLoadedDevice();
@@ -3106,7 +3239,13 @@ async function loadSelectedPackage() {
 async function loadAndRememberPackage2(bytes) {
   await loadAndRememberPackage(bytes, {
     loadDeviceBytes,
-    remember: (value) => packageStore.add(value),
+    remember: async (value) => {
+      try {
+        return await packageStore.add(value);
+      } catch (cause) {
+        throw browserExpectedError("web.package-store.write-failed", "could not remember the package", "host", cause);
+      }
+    },
     refreshRemembered: refreshStoredPackages,
     setRememberedStatus: (message) => {
       storedPackageStatus.textContent = message;
@@ -3116,7 +3255,7 @@ async function loadAndRememberPackage2(bytes) {
 }
 async function loadStoredPackage() {
   if (connected) {
-    showError(new Error("disconnect before loading another device"));
+    showError(browserExpectedError("web.package.connected", "disconnect before loading another device", "invocation"));
     return;
   }
   const id = selectedStoredPackageId();
@@ -3124,11 +3263,24 @@ async function loadStoredPackage() {
   setBusy(true, "loading package");
   storedPackageStatus.textContent = `Loading package ${id}.`;
   try {
-    const bytes = await packageStore.read(id);
-    if (bytes === null) throw new Error(`stored package ${id} no longer exists`);
+    let bytes;
+    try {
+      bytes = await packageStore.read(id);
+    } catch (cause) {
+      throw browserExpectedError("web.package-store.read-failed", `could not read stored package ${id}`, "host", cause);
+    }
+    if (bytes === null) throw browserExpectedError(
+      "web.package-store.missing",
+      `stored package ${id} no longer exists`,
+      "host"
+    );
     const admitted = await loadDeviceBytes(bytes);
     if (admitted.admission.kind !== "pdpkg") {
-      throw new Error(`stored package ${id} did not contain a pdpkg archive`);
+      throw browserExpectedError(
+        "web.package-store.invalid",
+        `stored package ${id} did not contain a pdpkg archive`,
+        "host"
+      );
     }
     storedPackageStatus.textContent = `Package ${id} loaded.`;
   } catch (cause) {
@@ -3144,7 +3296,11 @@ async function removeStoredPackage() {
   clearError();
   setBusy(true, "forgetting package");
   try {
-    await packageStore.remove(id);
+    try {
+      await packageStore.remove(id);
+    } catch (cause) {
+      throw browserExpectedError("web.package-store.remove-failed", `could not remove stored package ${id}`, "host", cause);
+    }
     await refreshStoredPackages();
     storedPackageStatus.textContent = `Forgot package ${id}.`;
   } catch (cause) {
@@ -3182,7 +3338,12 @@ function clearLoadedDevice() {
   renderRawTerminal();
 }
 async function refreshStoredPackages(preferredId) {
-  const packages = await packageStore.list();
+  let packages;
+  try {
+    packages = await packageStore.list();
+  } catch (cause) {
+    throw browserExpectedError("web.package-store.list-failed", "could not list stored packages", "host", cause);
+  }
   storedPackageSelect.replaceChildren();
   if (packages.length === 0) {
     appendOption(storedPackageSelect, "", "Nothing remembered yet");
@@ -3203,7 +3364,11 @@ async function refreshStoredPackages(preferredId) {
 }
 function selectedStoredPackageId() {
   const id = Number(storedPackageSelect.value);
-  if (!Number.isSafeInteger(id) || id < 1) throw new Error("select a stored package first");
+  if (!Number.isSafeInteger(id) || id < 1) throw browserExpectedError(
+    "web.package-store.selection-required",
+    "select a stored package first",
+    "invocation"
+  );
   return id;
 }
 function updateStoredPackageButtons(busy = false) {
@@ -3248,12 +3413,16 @@ async function grantAndConnect() {
   }
   try {
     if (profile.transport === "serial") {
-      if (serial === void 0) throw new Error("Web Serial is unavailable");
+      if (serial === void 0) throw browserExpectedError(
+        "web.serial.unavailable",
+        "Web Serial is unavailable",
+        "host"
+      );
       const port = await serial.requestPort(serialChooserFilters(profile.acquisitionFilters));
       const info = port.getInfo();
       activeGrant = browserGrant(profile.acquisitionFilters.map((filter) => (filter.vendorId === void 0 || filter.vendorId === info.usbVendorId) && (filter.productId === void 0 || filter.productId === info.usbProductId)));
     } else {
-      if (usb === void 0) throw new Error("WebUSB is unavailable");
+      if (usb === void 0) throw browserExpectedError("web.usb.unavailable", "WebUSB is unavailable", "host");
       const device = await usb.requestDevice(usbChooserFilters(profile.acquisitionFilters));
       activeGrant = browserGrant(profile.acquisitionFilters.map((filter) => usbFilterMatches(filter, device)));
     }
@@ -3279,7 +3448,11 @@ async function connectCandidate(candidateId, profile) {
       profile: profile.profileId,
       ...activeGrant === void 0 ? {} : { grant: activeGrant }
     })).find((value) => value.candidateId === candidateId && value.matchedProfileId === profile.profileId);
-    if (candidate === void 0) throw new Error(`candidate ${candidateId} is no longer authorized`);
+    if (candidate === void 0) throw browserExpectedError(
+      "web.acquisition.candidate-expired",
+      `candidate ${candidateId} is no longer authorized`,
+      "operation"
+    );
     let resolveCaptureIssued;
     const captureIssued = new Promise((resolve) => {
       resolveCaptureIssued = resolve;
@@ -3404,7 +3577,7 @@ function acceptDiagnostics(batch) {
 function renderDiagnosticRecords(records, dropped) {
   renderProtocolTools();
   let text = "";
-  for (const record2 of records) text = renderedHex.append(record2);
+  for (const record3 of records) text = renderedHex.append(record3);
   if (text.length > 0) {
     hexView.textContent = text;
     hexView.scrollTop = hexView.scrollHeight;
@@ -3433,7 +3606,11 @@ function exportCapture() {
 }
 function selectedProfile() {
   const profile = requireLoaded().profiles.find(({ modeId, profileId }) => modeId === modeSelect.value && profileId === profileSelect.value);
-  if (profile === void 0) throw new Error("select a declared connection profile");
+  if (profile === void 0) throw browserExpectedError(
+    "web.acquisition.profile-required",
+    "select a declared connection profile",
+    "invocation"
+  );
   return profile;
 }
 function renderRawTerminal() {
@@ -3477,7 +3654,11 @@ function renderRawTerminal() {
   terminalSendButton.disabled = !rawTerminalActive;
 }
 async function openRawTerminal() {
-  if (!connected || rawTerminalActive) throw new Error("raw terminal cannot open in the current session state");
+  if (!connected || rawTerminalActive) throw browserExpectedError(
+    "web.terminal.state",
+    "raw terminal cannot open in the current session state",
+    "invocation"
+  );
   clearError();
   const subscriptionId = sessionEvents?.subscriptionId;
   if (subscriptionId === void 0) throw new Error("session event subscription is unavailable");
@@ -3503,20 +3684,32 @@ async function exitRawTerminal() {
   renderRawTerminal();
 }
 async function sendRawTerminalBytes() {
-  if (!rawTerminalActive) throw new Error("raw terminal is not open");
+  if (!rawTerminalActive) throw browserExpectedError(
+    "web.terminal.not-open",
+    "raw terminal is not open",
+    "invocation"
+  );
   const bytes = parseHexBytes2(terminalBytesInput.value);
   if (rawTerminalId === void 0) throw new Error("raw terminal id is unavailable");
   const receipt = await requireClient().writeRawTerminal(rawTerminalId, bytes);
   appendTerminalLine(`tx ${receipt.atSequence}  ${hexBytes(bytes)}  [${receipt.outcome.kind}]`);
   terminalBytesInput.value = "";
   if (receipt.outcome.kind !== "accepted-by-platform") {
-    throw new Error(`raw terminal write was ${receipt.outcome.kind}`);
+    throw browserExpectedError(
+      "web.terminal.write-incomplete",
+      `raw terminal write was ${receipt.outcome.kind}`,
+      "operation"
+    );
   }
 }
 function parseHexBytes2(value) {
   const compact = value.replace(/\s+/gu, "");
   if (compact.length === 0 || compact.length % 2 !== 0 || !/^[0-9a-f]+$/iu.test(compact)) {
-    throw new Error("raw terminal bytes must be one or more complete hexadecimal octets");
+    throw browserExpectedError(
+      "web.terminal.bytes-invalid",
+      "raw terminal bytes must be one or more complete hexadecimal octets",
+      "invocation"
+    );
   }
   return Uint8Array.from(compact.match(/../gu).map((octet) => Number.parseInt(octet, 16)));
 }
@@ -3578,29 +3771,22 @@ function updateConnectButton() {
   connectButton.disabled = connected || loaded === void 0 || profileSelect.value.length === 0;
 }
 function showError(cause) {
-  const error = errorObject(cause);
+  const error = browserFailure(cause);
   errorPanel.hidden = false;
-  errorMessage.textContent = errorText(error);
+  errorMessage.textContent = browserFailureText(error);
   errorView.textContent = JSON.stringify(error, null, 2);
-}
-function errorText(error) {
-  const reported = error;
-  if (typeof reported.message === "string" && reported.message.length > 0) return reported.message;
-  if (typeof reported.code === "string" && reported.code.length > 0) return reported.code;
-  return "The request failed without a reported cause.";
 }
 function clearError() {
   errorPanel.hidden = true;
   errorMessage.textContent = "";
   errorView.textContent = "";
 }
-function errorObject(cause) {
-  if (cause instanceof SessionRpcError) return cause.error;
-  if (typeof cause === "object" && cause !== null && "error" in cause) return cause.error;
-  return { code: "web.failed", message: cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause), retryability: "no" };
-}
 function requireSessionContext() {
-  if (sessionContext === void 0) throw new Error("load a device before using the session");
+  if (sessionContext === void 0) throw browserExpectedError(
+    "web.session.required",
+    "load a device before using the session",
+    "invocation"
+  );
   return sessionContext;
 }
 function requireClient() {
@@ -3610,15 +3796,27 @@ function selectedBrowserCaptureLimits() {
   const maximumCaptureInMemoryBytes = Number(captureMemoryInput.value);
   const maximumCaptureQueueBytes = Number(captureQueueInput.value);
   if (!Number.isSafeInteger(maximumCaptureQueueBytes) || maximumCaptureQueueBytes <= 0) {
-    throw new RangeError("maximum capture queue bytes must be a positive integer");
+    throw browserExpectedError(
+      "web.capture.queue-limit-invalid",
+      "maximum capture queue bytes must be a positive integer",
+      "invocation"
+    );
   }
   if (!Number.isSafeInteger(maximumCaptureInMemoryBytes) || maximumCaptureInMemoryBytes <= maximumCaptureQueueBytes) {
-    throw new RangeError("capture memory bytes must be an integer greater than maximum capture queue bytes");
+    throw browserExpectedError(
+      "web.capture.memory-limit-invalid",
+      "capture memory bytes must be an integer greater than maximum capture queue bytes",
+      "invocation"
+    );
   }
   return Object.freeze({ maximumCaptureQueueBytes, maximumCaptureInMemoryBytes });
 }
 function requireSessionCaptureLimits() {
-  if (sessionCaptureLimits === void 0) throw new Error("capture limits are unavailable until a device is loaded");
+  if (sessionCaptureLimits === void 0) throw browserExpectedError(
+    "web.capture.session-required",
+    "capture limits are unavailable until a device is loaded",
+    "invocation"
+  );
   return sessionCaptureLimits;
 }
 async function resetForCaptureSettings() {
@@ -3639,7 +3837,11 @@ async function resetForCaptureSettings() {
 function browserGrant(matches) {
   const matchedFilters = matches.flatMap((matched, index) => matched ? [index] : []);
   if (matchedFilters.length === 0) {
-    throw new Error("the granted device does not match any requested profile filter");
+    throw browserExpectedError(
+      "web.acquisition.grant-mismatch",
+      "the granted device does not match any requested profile filter",
+      "invocation"
+    );
   }
   return {
     grantId: crypto.randomUUID(),
@@ -3647,7 +3849,11 @@ function browserGrant(matches) {
   };
 }
 function requireLoaded() {
-  if (loaded === void 0) throw new Error("load a device package first");
+  if (loaded === void 0) throw browserExpectedError(
+    "web.package.required",
+    "load a device package first",
+    "invocation"
+  );
   return loaded;
 }
 function identityText(value) {

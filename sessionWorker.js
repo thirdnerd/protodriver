@@ -71,6 +71,7 @@ var HostResourceLimitError = class extends Error {
     const error = {
       code,
       message: `${scope} exceeds ${limit}: observed ${observed}, maximum ${maximum}`,
+      responsibility: "host",
       retryability: "no",
       details: { limit, maximum, observed, scope }
     };
@@ -434,342 +435,21 @@ var ResourceBrokerRpcClient = class {
   }
 };
 
-// ../../packages/core/src/clock.ts
-var RESOLUTION_SAMPLE_LIMIT = 1e5;
-var RESOLUTION_CHANGES_REQUIRED = 32;
-var MICROSECONDS_PER_MILLISECOND = 1e3;
-function requireFiniteNonNegative(value, name2) {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new RangeError(`${name2} must be a finite, non-negative number`);
-  }
-  return value;
+// ../../packages/contracts/src/values.ts
+function isPdrFailureResponsibility(value) {
+  return value === "invocation" || value === "definition" || value === "operation" || value === "host";
 }
-function nextSequence(current2) {
-  if (current2 >= Number.MAX_SAFE_INTEGER) {
-    throw new RangeError("clock sequence exhausted Number.MAX_SAFE_INTEGER");
-  }
-  return current2 + 1;
-}
-function measureResolutionUs(readMilliseconds) {
-  const originMs = readMilliseconds();
-  let previousMs = originMs;
-  let minimumUs = Number.POSITIVE_INFINITY;
-  let changes = 0;
-  for (let sample = 0; sample < RESOLUTION_SAMPLE_LIMIT && changes < RESOLUTION_CHANGES_REQUIRED; sample += 1) {
-    const currentMs = readMilliseconds();
-    const deltaUs = (currentMs - previousMs) * MICROSECONDS_PER_MILLISECOND;
-    if (deltaUs > 0) {
-      minimumUs = Math.min(minimumUs, deltaUs);
-      changes += 1;
-    }
-    previousMs = currentMs;
-  }
-  return {
-    originMs,
-    resolutionUs: Number.isFinite(minimumUs) ? Math.max(1, minimumUs) : 1
-  };
-}
-var CallbackDisposable = class {
-  #callback;
-  constructor(callback) {
-    this.#callback = callback;
-  }
-  dispose() {
-    const callback = this.#callback;
-    this.#callback = void 0;
-    callback?.();
-  }
-};
-var RealClock = class {
-  resolutionUs;
-  #originMs;
-  #sequence = 0;
-  constructor() {
-    const measured = measureResolutionUs(() => performance.now());
-    this.#originMs = measured.originMs;
-    this.resolutionUs = measured.resolutionUs;
-  }
-  monotonicUs() {
-    return (performance.now() - this.#originMs) * MICROSECONDS_PER_MILLISECOND;
-  }
-  wallClockUnixMs() {
-    return Date.now();
-  }
-  nextSequence() {
-    this.#sequence = nextSequence(this.#sequence);
-    return this.#sequence;
-  }
-  sleep(ms, signal) {
-    requireFiniteNonNegative(ms, "delay");
-    if (signal?.aborted) {
-      return Promise.reject(signal.reason);
-    }
-    return new Promise((resolve, reject) => {
-      const handle = setTimeout(() => {
-        signal?.removeEventListener("abort", abort);
-        resolve();
-      }, ms);
-      const abort = () => {
-        clearTimeout(handle);
-        signal?.removeEventListener("abort", abort);
-        reject(signal?.reason);
-      };
-      signal?.addEventListener("abort", abort, { once: true });
-    });
-  }
-  timer(ms, fn) {
-    requireFiniteNonNegative(ms, "delay");
-    const handle = setTimeout(fn, ms);
-    return new CallbackDisposable(() => clearTimeout(handle));
-  }
-  interval(ms, fn) {
-    requireFiniteNonNegative(ms, "delay");
-    const handle = setInterval(fn, ms);
-    return new CallbackDisposable(() => clearInterval(handle));
-  }
-};
 
-// ../../packages/core/src/events.ts
-function requireNonNegativeSafeInteger(value, name2) {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new RangeError(`${name2} must be a non-negative safe integer`);
-  }
-  return value;
-}
-function overflowError(maximumLosslessQueueDepth) {
-  return {
-    code: "rpc.subscriber-overflow",
-    message: `subscriber exceeded ${maximumLosslessQueueDepth} pending lossless events`,
-    retryability: "after-recovery",
-    details: { maximumLosslessQueueDepth }
-  };
-}
-function pendingEvent(event) {
-  if (event.kind === "operation-progress" || event.kind === "transfer-progress") {
-    return { event, coalescingKeys: [`operation:${event.operationId}`] };
-  }
-  if (event.kind === "state-cells") {
-    return {
-      event,
-      coalescingKeys: Object.keys(event.changed).map((name2) => `cell:${name2}`)
-    };
-  }
-  return { event };
-}
-var SessionEventDelivery = class {
-  #options;
-  #subscribers = /* @__PURE__ */ new Map();
-  #replay = [];
-  constructor(options) {
-    this.#options = {
-      ...options,
-      maximumLosslessQueueDepth: requireNonNegativeSafeInteger(
-        options.maximumLosslessQueueDepth,
-        "maximumLosslessQueueDepth"
-      ),
-      maximumReplayCount: requireNonNegativeSafeInteger(
-        options.maximumReplayCount,
-        "maximumReplayCount"
-      )
-    };
-  }
-  subscribe(subscriptionId, listener, options = {}) {
-    if (this.#subscribers.has(subscriptionId)) {
-      throw new Error(`subscription ${subscriptionId} already exists`);
-    }
-    const replayLast = requireNonNegativeSafeInteger(options.replayLast ?? 0, "replayLast");
-    if (replayLast > this.#options.maximumReplayCount) {
-      throw new RangeError(
-        `replayLast ${replayLast} exceeds maximumReplayCount ${this.#options.maximumReplayCount}`
-      );
-    }
-    const subscriber = {
-      id: subscriptionId,
-      listener,
-      queue: [],
-      coalesced: /* @__PURE__ */ new Map(),
-      pendingLossless: 0,
-      delivering: false,
-      terminated: false
-    };
-    this.#subscribers.set(subscriptionId, subscriber);
-    for (const event of this.#replay.slice(-replayLast)) this.#enqueue(subscriber, event);
-    return { dispose: () => this.unsubscribe(subscriptionId) };
-  }
-  unsubscribe(subscriptionId) {
-    const subscriber = this.#subscribers.get(subscriptionId);
-    if (subscriber === void 0) return;
-    this.#discard(subscriber);
-    this.#subscribers.delete(subscriptionId);
-  }
-  clear() {
-    for (const subscriber of this.#subscribers.values()) this.#discard(subscriber);
-    this.#subscribers.clear();
-  }
-  /** Records one session event for replay and offers it to every subscriber. */
-  publish(event) {
-    this.#remember(event);
-    for (const subscriber of [...this.#subscribers.values()]) this.#enqueue(subscriber, event);
-  }
-  /** Delivers an already-addressed RPC event without adding it to replay. */
-  publishTo(subscriptionId, event) {
-    const subscriber = this.#subscribers.get(subscriptionId);
-    if (subscriber !== void 0) this.#enqueue(subscriber, event);
-  }
-  terminate(subscriptionId, reason) {
-    const subscriber = this.#subscribers.get(subscriptionId);
-    if (subscriber !== void 0) this.#terminate(subscriber, reason);
-  }
-  queueState(subscriptionId) {
-    const subscriber = this.#subscribers.get(subscriptionId);
-    if (subscriber === void 0) return void 0;
-    return {
-      pendingLosslessEvents: subscriber.pendingLossless,
-      pendingCoalescedEvents: subscriber.coalesced.size,
-      delivering: subscriber.delivering
-    };
-  }
-  #remember(event) {
-    if (this.#options.maximumReplayCount === 0) return;
-    this.#replay.push(event);
-    if (this.#replay.length > this.#options.maximumReplayCount) this.#replay.shift();
-  }
-  #enqueue(subscriber, event) {
-    if (subscriber.terminated) return;
-    const pending = pendingEvent(event);
-    if (pending.coalescingKeys === void 0 || pending.coalescingKeys.length === 0) {
-      if (subscriber.pendingLossless >= this.#options.maximumLosslessQueueDepth) {
-        this.#terminate(subscriber, overflowError(this.#options.maximumLosslessQueueDepth));
-        return;
-      }
-      subscriber.pendingLossless += 1;
-    } else {
-      for (const key of pending.coalescingKeys) {
-        const replaced = subscriber.coalesced.get(key);
-        if (replaced !== void 0) this.#removeKey(subscriber, replaced, key);
-        subscriber.coalesced.set(key, pending);
-      }
-    }
-    subscriber.queue.push(pending);
-    this.#schedule(subscriber);
-  }
-  #removeKey(subscriber, pending, key) {
-    subscriber.coalesced.delete(key);
-    const keys2 = pending.coalescingKeys;
-    const keyIndex = keys2.indexOf(key);
-    if (keyIndex >= 0) keys2.splice(keyIndex, 1);
-    if (pending.event.kind === "state-cells" && key.startsWith("cell:")) {
-      const name2 = key.slice("cell:".length);
-      const changed = { ...pending.event.changed };
-      delete changed[name2];
-      pending.event = { ...pending.event, changed };
-    }
-    if (keys2.length === 0) {
-      const queueIndex = subscriber.queue.indexOf(pending);
-      if (queueIndex >= 0) subscriber.queue.splice(queueIndex, 1);
-    }
-  }
-  #schedule(subscriber) {
-    if (subscriber.delivering || subscriber.terminated) return;
-    subscriber.delivering = true;
-    queueMicrotask(() => void this.#drain(subscriber));
-  }
-  async #drain(subscriber) {
-    while (!subscriber.terminated) {
-      const pending = subscriber.queue.shift();
-      if (pending === void 0) break;
-      if (pending.coalescingKeys === void 0 || pending.coalescingKeys.length === 0) {
-        subscriber.pendingLossless -= 1;
-      } else {
-        for (const key of pending.coalescingKeys) {
-          if (subscriber.coalesced.get(key) === pending) subscriber.coalesced.delete(key);
-        }
-      }
-      try {
-        await subscriber.listener(pending.event);
-      } catch (cause) {
-        try {
-          if (this.#options.onListenerError === void 0) {
-            console.error(`session event listener ${subscriber.id} failed`, cause);
-          } else {
-            this.#options.onListenerError(subscriber.id, cause);
-          }
-        } catch {
-        }
-        await Promise.resolve();
-      }
-    }
-    subscriber.delivering = false;
-    if (!subscriber.terminated && subscriber.queue.length > 0) this.#schedule(subscriber);
-  }
-  #terminate(subscriber, reason) {
-    if (subscriber.terminated) return;
-    subscriber.terminated = true;
-    this.#discard(subscriber);
-    this.#subscribers.delete(subscriber.id);
-    queueMicrotask(() => {
-      try {
-        this.#options.onSubscriberTerminated?.(subscriber.id, reason);
-      } catch {
-      }
-    });
-  }
-  #discard(subscriber) {
-    subscriber.terminated = true;
-    subscriber.queue.length = 0;
-    subscriber.coalesced.clear();
-    subscriber.pendingLossless = 0;
-  }
-};
-
-// ../../packages/core/src/rpc.ts
-function isResponse(message) {
-  return message.kind === "ok" || message.kind === "error";
-}
-function isEvent(message) {
-  return message.kind === "event" || message.kind === "diagnostics" || message.kind === "client-evicted" || message.kind === "subscriber-evicted";
-}
-function serveSessionRpc(endpoint, server) {
-  let closed = false;
-  const onMessage = ({ data }) => {
-    if (closed || isResponse(data) || isEvent(data)) return;
-    void server.handle(data).then(
-      (response) => {
-        if (!closed) endpoint.postMessage(response);
-      },
-      (cause) => {
-        if (closed) return;
-        const error = {
-          code: "rpc.handler-failed",
-          message: cause instanceof Error ? cause.message : String(cause),
-          retryability: "unknown"
-        };
-        endpoint.postMessage({
-          kind: "error",
-          method: data.kind,
-          callId: data.callId,
-          error
-        });
-      }
-    );
-  };
-  endpoint.addEventListener("message", onMessage);
-  endpoint.start?.();
-  void (async () => {
-    for await (const event of server.events) {
-      if (closed) return;
-      endpoint.postMessage(event);
-    }
-  })();
-  return {
-    dispose() {
-      if (closed) return;
-      closed = true;
-      endpoint.removeEventListener("message", onMessage);
-      endpoint.close?.();
-    }
-  };
-}
+// ../../packages/contracts/src/units.ts
+var SEMANTIC_UNIT_IDENTIFIERS = Object.freeze([
+  "byte",
+  "centidegree-celsius",
+  "hertz",
+  "microsecond",
+  "millisecond",
+  "millivolt",
+  "tenth-hertz"
+]);
 
 // ../../packages/contracts/src/limits.ts
 var DEFAULT_CAPTURE_CAPACITY_POLICY = Object.freeze({
@@ -806,1672 +486,6 @@ var DEFAULT_HOST_RESOURCE_LIMITS = {
   maximumCaptureInMemoryBytes: DEFAULT_CAPTURE_CAPACITY_POLICY.maximumQueueBytes + DEFAULT_CAPTURE_CAPACITY_POLICY.maximumRetainedBytes
 };
 
-// ../../packages/control-model/src/authored.ts
-function generateAuthoredResultControl(type2, label) {
-  const declaration = structuredClone(type2);
-  const children = (fields2) => Object.freeze(Object.fromEntries(
-    Object.keys(fields2).sort().map((name2) => [name2, generateAuthoredResultControl(fields2[name2], type2.fieldLabels?.[name2])])
-  ));
-  if (type2.kind === "record") return Object.freeze({ declaration, ...label === void 0 ? {} : { label }, kind: "record", fields: children(type2.fields) });
-  if (type2.kind === "array") return Object.freeze({ declaration, ...label === void 0 ? {} : { label }, kind: "array", item: generateAuthoredResultControl(type2.item) });
-  if (type2.kind === "variant") return Object.freeze({ declaration, ...label === void 0 ? {} : { label }, kind: "variant", variants: children(type2.variants) });
-  const value = type2.kind === "bytes" ? { kind: "bytes" } : type2.kind === "enum" || type2.kind === "flags" ? { kind: type2.kind === "enum" ? "member" : "flags", members: type2.members.map((name2) => ({ name: name2 })) } : { kind: "scalar", unit: type2.unit ?? null };
-  return Object.freeze({ declaration, ...label === void 0 ? {} : { label }, kind: "leaf", value });
-}
-function generateAuthoredControlModel(description) {
-  return Object.freeze({
-    apiVersion: description.apiVersion,
-    id: description.id,
-    ...description.displayName === void 0 ? {} : { displayName: description.displayName },
-    ...description.description === void 0 ? {} : { description: description.description },
-    ...description.modePresentation === void 0 ? {} : { modePresentation: description.modePresentation },
-    modes: description.modes,
-    profiles: description.profiles,
-    state: Object.fromEntries(Object.entries(description.state ?? {}).map(([id, cell]) => [id, { ...cell, valueControl: generateAuthoredResultControl(cell.type) }])),
-    operations: description.operations.map((operation) => Object.freeze({
-      ...operation,
-      argumentControls: Object.fromEntries(Object.entries(operation.arguments).map(([name2, type2]) => [
-        name2,
-        type2.kind === "byte-source" || type2.kind === "stream-source" ? {
-          kind: "file",
-          minimumBytes: type2.minimumBytes,
-          maximumBytes: type2.maximumBytes,
-          ...type2.label === void 0 ? {} : { label: type2.label },
-          ...type2.description === void 0 ? {} : { description: type2.description }
-        } : { kind: "value", type: type2, ...type2.label === void 0 ? {} : { label: type2.label }, ...type2.description === void 0 ? {} : { description: type2.description } }
-      ])),
-      resultControl: operation.result.kind === "value" ? generateAuthoredResultControl(operation.result.type) : null
-    }))
-  });
-}
-
-// ../../packages/lua-vm/src/resource-policy.ts
-var LUA_RESOURCE_POLICY_DEFAULTS = Object.freeze({
-  maximumEncodedInputBytes: 1048576,
-  maximumEncodedOutputBytes: 1048576,
-  maximumVmAllocationBytes: 16777216
-});
-var LUA_RESOURCE_POLICY_MAXIMA = Object.freeze({
-  maximumEncodedInputBytes: 4194304,
-  maximumEncodedOutputBytes: 4194304,
-  maximumVmAllocationBytes: 67108864
-});
-function resolveLuaResourcePolicy(request2 = {}) {
-  return Object.freeze({
-    maximumEncodedInputBytes: member("maximumEncodedInputBytes", request2),
-    maximumEncodedOutputBytes: member("maximumEncodedOutputBytes", request2),
-    maximumVmAllocationBytes: member("maximumVmAllocationBytes", request2)
-  });
-}
-function luaResourceError(code, detail, fuelConsumed) {
-  const error = new Error(detail.startsWith(`${code}:`) ? detail : `${code}: ${detail}`);
-  Object.defineProperty(error, "code", { value: code, enumerable: true });
-  if (fuelConsumed !== void 0) {
-    Object.defineProperty(error, "fuelConsumed", { value: fuelConsumed, enumerable: true });
-  }
-  return error;
-}
-function member(name2, request2) {
-  const value = request2[name2] ?? LUA_RESOURCE_POLICY_DEFAULTS[name2];
-  if (!Number.isSafeInteger(value) || value <= 0 || value > LUA_RESOURCE_POLICY_MAXIMA[name2]) {
-    throw luaResourceError(
-      "lua-vm.resource.policy-limit",
-      `${name2} must be a positive integer no greater than ${LUA_RESOURCE_POLICY_MAXIMA[name2]}; observed ${value}`
-    );
-  }
-  return value;
-}
-
-// ../../packages/lua-vm/src/native-account.ts
-var StandaloneNativeData = class {
-  #resident = 8;
-  #serial = 0;
-  reserve(capacity, usedLength = capacity) {
-    if (!Number.isSafeInteger(capacity) || capacity < 0 || !Number.isSafeInteger(usedLength) || usedLength < 0 || usedLength > capacity) throw new RangeError("invalid native reservation");
-    const bytes = capacity + 84;
-    if (!Number.isSafeInteger(++this.#serial) || bytes > 16 * 1024 * 1024 - this.#resident)
-      throw luaResourceError("retained.helper-data-exhausted", "native data exhausted before allocation");
-    this.#resident += bytes;
-    let live = true;
-    return { release: () => {
-      if (live) {
-        live = false;
-        this.#resident -= bytes;
-      }
-    } };
-  }
-};
-var NativeScratch = class _NativeScratch {
-  #data;
-  #charge;
-  #held = [];
-  owner;
-  constructor(data, charge, owner) {
-    this.#data = data;
-    this.#charge = charge;
-    this.owner = owner;
-  }
-  get dataAccount() {
-    return this.#data;
-  }
-  iteration = () => {
-    this.#charge(1);
-  };
-  work(units) {
-    if (!Number.isSafeInteger(units) || units < 0) throw new RangeError("invalid native work charge");
-    if (units === 0) return;
-    this.#charge(units);
-  }
-  reserve(capacity) {
-    this.#held.push(this.#data.reserve(capacity));
-  }
-  /** A component may release its own intermediates at last use. The parent
-   * remains a refusal/unwind backstop if construction never reaches finish. */
-  child() {
-    this.reserve(128);
-    const child = new _NativeScratch(this.#data, this.#charge, this.owner);
-    this.#held.push({ release: () => child.close() });
-    return child;
-  }
-  /** Reserve append storage before its allocation, not after a size walk.
-   * Canonical structural convention: container 8, scalar/entry 8+payload. */
-  node(bytes = 8) {
-    this.iteration();
-    this.reserve(bytes);
-  }
-  text(value) {
-    this.reserve(8 + value.length * 3);
-    this.work(1 + Math.ceil(value.length / 256));
-  }
-  /** A size walk borrows engine temporaries; it does not transfer their
-   * lifetime to the value being sized. Keep the same work/data accounts. */
-  transient(run) {
-    const scratch = new _NativeScratch(this.#data, this.#charge, this.owner);
-    try {
-      return withNativeScratch(scratch, () => run(scratch));
-    } finally {
-      scratch.close();
-    }
-  }
-  close() {
-    for (const held of this.#held) held.release();
-    this.#held.length = 0;
-  }
-};
-var current;
-function activeNativeScratch() {
-  return current;
-}
-function withNativeScratch(scratch, run) {
-  const previous = current;
-  current = scratch;
-  try {
-    const result = run();
-    if (result && typeof result === "object" && "then" in result)
-      throw new Error("native accounting scope cannot cross an asynchronous boundary");
-    return result;
-  } finally {
-    current = previous;
-  }
-}
-function population(value) {
-  let count = 0;
-  for (const key in value) {
-    current?.iteration();
-    if (Object.hasOwn(value, key)) count++;
-  }
-  return count;
-}
-function nativeKeys(value) {
-  const count = current ? population(value) : 0;
-  current?.work(count);
-  current?.reserve(8 + count * 16);
-  return Object.keys(value);
-}
-function nativeEntries(value) {
-  const count = current ? population(value) : 0;
-  current?.work(count);
-  current?.reserve(8 + count * 56);
-  return Object.entries(value);
-}
-function nativeValues(value) {
-  const count = current ? population(value) : 0;
-  current?.work(count);
-  current?.reserve(8 + count * 16);
-  return Object.values(value);
-}
-function nativeRecord(entries) {
-  current?.reserve(8);
-  function* accounted() {
-    for (const entry of entries) {
-      current?.iteration();
-      current?.reserve(16 + (typeof entry[0] === "string" ? entry[0].length * 3 : 8));
-      yield entry;
-    }
-  }
-  return Object.fromEntries(accounted());
-}
-function nativeArray(value) {
-  if (!current || value === void 0) return value;
-  const scope = current;
-  scope.reserve(88);
-  return new Proxy(value, {
-    get(target, key) {
-      const method = Reflect.get(target, key, target);
-      if (typeof method !== "function") return method;
-      if (!["map", "filter", "flatMap", "reduce", "forEach", "some", "every", "find", "findIndex"].includes(String(key)))
-        return method.bind(target);
-      return (callback, ...rest) => {
-        if (key === "map" || key === "filter") scope.reserve(8 + target.length * 16);
-        if (key === "flatMap") scope.reserve(8);
-        return method.call(target, function(...args) {
-          scope.iteration();
-          const result = callback.apply(this, args);
-          if (key === "flatMap") {
-            const length = Array.isArray(result) ? result.length : 1;
-            scope.reserve(length * 16);
-            scope.work(1 + Math.ceil(length / 256));
-          }
-          return result;
-        }, ...rest);
-      };
-    }
-  });
-}
-function nativeSort(value, compare) {
-  current?.reserve(8 + value.length * 16);
-  value.sort((a, b) => {
-    current?.iteration();
-    if (typeof a === "string") current?.work(1 + Math.ceil(a.length / 256));
-    if (typeof b === "string") current?.work(1 + Math.ceil(b.length / 256));
-    if (compare) return compare(a, b);
-    const left = String(a), right = String(b);
-    return left < right ? -1 : left > right ? 1 : 0;
-  });
-  return value;
-}
-function nativeValue(value) {
-  if (!current) return value;
-  const seen = /* @__PURE__ */ new Set();
-  current.reserve(8);
-  const visit = (v) => {
-    current.node(24);
-    if (typeof v === "string") {
-      current.text(v);
-      return;
-    }
-    if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) {
-      current.reserve(8 + v.byteLength);
-      current.work(1 + Math.ceil(v.byteLength / 256));
-      return;
-    }
-    if (!v || typeof v !== "object") return;
-    if (seen.has(v)) throw new TypeError("native structural copy does not accept cycles");
-    seen.add(v);
-    try {
-      if (v instanceof Map) {
-        for (const [key, item2] of v) {
-          visit(key);
-          visit(item2);
-        }
-      } else if (v instanceof Set) {
-        for (const item2 of v) visit(item2);
-      } else if (Array.isArray(v)) for (const item2 of nativeArray(v)) visit(item2);
-      else for (const [key, item2] of nativeEntries(v)) {
-        current.text(key);
-        visit(item2);
-      }
-    } finally {
-      seen.delete(v);
-    }
-  };
-  visit(value);
-  return value;
-}
-function nativeJson(value) {
-  if (!current) return JSON.stringify(value);
-  let capacity = 8;
-  const seen = /* @__PURE__ */ new Set();
-  current.reserve(8);
-  const visit = (v) => {
-    current.iteration();
-    if (typeof v === "string") {
-      capacity += 2 + v.length * 6;
-      return;
-    }
-    capacity += 32;
-    if (!v || typeof v !== "object") return;
-    if (seen.has(v)) throw new TypeError("native JSON does not accept cycles");
-    seen.add(v);
-    try {
-      if (Array.isArray(v)) for (const item2 of nativeArray(v)) visit(item2);
-      else for (const [key, item2] of nativeEntries(v)) {
-        visit(key);
-        visit(item2);
-      }
-    } finally {
-      seen.delete(v);
-    }
-  };
-  visit(value);
-  current.reserve(capacity);
-  current.work(1 + Math.ceil(capacity / 256));
-  return JSON.stringify(value);
-}
-function nativeEncode(value) {
-  if (value !== void 0) current?.text(value);
-  return new TextEncoder().encode(value);
-}
-
-// ../../packages/lua-vm/src/environment-failure.ts
-function environmentFailure(code) {
-  const names2 = /* @__PURE__ */ new Map([
-    [-1, "malformed"],
-    [-2, "capacity"],
-    [-3, "non-finite"],
-    [-4, "negative-zero"],
-    [-5, "forbidden-crossing"],
-    [-6, "source"],
-    [-7, "program"],
-    [-8, "invalid-text"],
-    [-10, "missing-value"],
-    [-11, "array-shape"],
-    [-12, "record-key"],
-    [-13, "cycle"],
-    [-14, "boundary-object"],
-    [-15, "require-missing"],
-    [-16, "require-initialization-cycle"],
-    [-19, "admission-exports"],
-    [-20, "invocation-export"],
-    [-21, "pointer-rendering"],
-    [-22, "integer-decimal"],
-    [-23, "integer-range"],
-    [-24, "variant-tag"],
-    [-25, "variant-value"]
-  ]);
-  const name2 = `lua-vm.environment.${names2.get(code) ?? `failure-${code}`}`;
-  const error = new Error(`${name2}: closed Lua execution failed`);
-  Object.defineProperty(error, "code", { value: name2, enumerable: true });
-  return error;
-}
-
-// ../../packages/lua-vm/src/value-abi.ts
-function sourceMemberAdmissionError(member2, reason) {
-  const error = new Error(`lua-vm.admission.source-member: ${member2} ${reason}`);
-  Object.defineProperties(error, {
-    code: { value: "lua-vm.admission.source-member", enumerable: true },
-    sourceMember: { value: member2, enumerable: true },
-    sourceMemberFailure: { value: reason, enumerable: true },
-    phase: { value: "admission", enumerable: true }
-  });
-  return error;
-}
-function requireLuaAdmissionResult(frame) {
-  if (frame !== null && typeof frame === "object") {
-    const decoded2 = frame;
-    if (decoded2.envelopeKind === "program-failure") throw programFailureError(decoded2.semantic, "admission");
-    if (decoded2.envelopeKind === "source-member-failure") {
-      const semantic2 = decoded2.semantic;
-      throw sourceMemberAdmissionError(String(semantic2.member), semantic2.reason);
-    }
-  }
-  if (frame === null || typeof frame !== "object" || frame.envelopeKind !== "admission-result") {
-    fail("admission-envelope", "admission worker did not return an admission-result envelope");
-  }
-  const decoded = frame;
-  if (decoded.semantic === null || typeof decoded.semantic !== "object" || decoded.semantic.kind !== "admission-result") {
-    fail("admission-envelope", "admission worker did not return an admission-result envelope");
-  }
-  const semantic = decoded.semantic;
-  if (!Array.isArray(semantic.exportsInCanonicalOrder) || nativeArray(semantic.exportsInCanonicalOrder).some((name2) => typeof name2 !== "string")) {
-    fail("admission-envelope", "admission worker returned malformed export names");
-  }
-  return Object.freeze({
-    graph: semantic.graph,
-    exportsInCanonicalOrder: Object.freeze([...semantic.exportsInCanonicalOrder])
-  });
-}
-function encodeLuaProgramInvocation(exportName, input, iteration = activeNativeScratch()?.iteration) {
-  return encodeLuaValueAbiFrame("invoke", { kind: "invoke", exportName, input }, iteration);
-}
-function encodeLuaProgramInvocationInto(exportName, input, target, iteration) {
-  const writer = new ByteWriter(iteration, target);
-  writer.bytes(Uint8Array.of(80, 68, 82, 86, 1, envelopeKinds.get("invoke")));
-  writer.region((content) => {
-    const name2 = encodeName(exportName, "invoke.exportName");
-    content.u32(name2.length).bytes(name2);
-    encodeValue(input, content, "invoke.input");
-  });
-  return writer.finish().length;
-}
-function requireLuaProgramInvocationOutcome(frame) {
-  if (frame === null || typeof frame !== "object") fail("invocation-envelope", "invocation returned no value envelope");
-  const decoded = frame;
-  if (decoded.envelopeKind === "program-failure") throw programFailureError(decoded.semantic, "invocation");
-  if (decoded.envelopeKind !== "value") {
-    fail("invocation-envelope", "invocation did not return a value envelope");
-  }
-  const kind = decodedRootKind(decoded.semantic);
-  return Object.freeze({ kind, value: materializeInvocationValue(decoded.semantic, "invocation.output") });
-}
-function programFailureError(semanticValue, phase) {
-  const semantic = semanticValue;
-  const error = new Error(`lua-vm.${phase}.program-failure: ${String(semantic.name)}`);
-  Object.defineProperties(error, {
-    code: { value: `lua-vm.${phase}.program-failure`, enumerable: true },
-    programFailureName: { value: semantic.name, enumerable: true },
-    programFailureDetails: { value: semantic.details, enumerable: true },
-    ...phase === "admission" ? { phase: { value: phase, enumerable: true } } : {}
-  });
-  return error;
-}
-function decodedRootKind(value) {
-  if (value === false) return "false";
-  if (value === true) return "true";
-  if (value === null) return "null";
-  if (!isValueNode(value)) fail("invocation-envelope", "invocation value has no ABI root kind");
-  switch (value.kind) {
-    case "boolean":
-      return value.value === false ? "false" : "true";
-    case "i64":
-      return "signed-bounded-integer";
-    case "u64":
-      return "unsigned-bounded-integer";
-    case "integer":
-      return "arbitrary-integer";
-    case "float64":
-      return "finite-float";
-    case "text":
-      return "text";
-    case "bytes":
-      return "bytes";
-    case "array":
-      return "array";
-    case "record":
-      return "record";
-    case "variant":
-      return "tagged-variant";
-    case "null":
-      return "null";
-    default:
-      fail("invocation-envelope", `invocation value has unknown ABI root kind ${value.kind}`);
-  }
-}
-function materializeInvocationValue(value, at) {
-  activeNativeScratch()?.node();
-  if (value === null || typeof value === "boolean") return value;
-  if (!isValueNode(value)) fail("invocation-envelope", `${at} is not a decoded ABI value`);
-  if (value.kind === "boolean") {
-    if (typeof value.value !== "boolean") fail("invocation-envelope", `${at}.value is not Boolean`);
-    return value.value;
-  }
-  if (value.kind === "i64" || value.kind === "u64" || value.kind === "integer") {
-    return Object.freeze({ kind: value.kind, decimal: requireString(value.decimal, `${at}.decimal`) });
-  }
-  if (value.kind === "float64") return Number(requireString(value.decimal, `${at}.decimal`));
-  if (value.kind === "text") return requireString(value.value, `${at}.value`);
-  if (value.kind === "bytes") return decodeHex(requireString(value.hex, `${at}.hex`), at);
-  if (value.kind === "null") return null;
-  if (value.kind === "array") {
-    return Object.freeze(nativeArray(requireArray(value.items, `${at}.items`)).map(
-      (item2, index) => materializeInvocationValue(item2, `${at}[${index}]`)
-    ));
-  }
-  if (value.kind === "record") {
-    const entries = requireArray(value.entriesInCanonicalOrder, `${at}.entriesInCanonicalOrder`);
-    return Object.freeze(nativeRecord(nativeArray(entries).map((entry, index) => {
-      if (!Array.isArray(entry) || entry.length !== 2) fail("invocation-envelope", `${at}.entries[${index}] is not a pair`);
-      return [requireString(entry[0], `${at}.entries[${index}].name`), materializeInvocationValue(entry[1], `${at}.${String(entry[0])}`)];
-    })));
-  }
-  if (value.kind === "variant") {
-    return Object.freeze({
-      kind: "variant",
-      tag: requireString(value.tag, `${at}.tag`),
-      value: materializeInvocationValue(value.value, `${at}.value`)
-    });
-  }
-  fail("invocation-envelope", `${at} has unknown decoded ABI kind ${value.kind}`);
-}
-var encoder2 = new TextEncoder();
-var decoder = new TextDecoder("utf-8", { fatal: true });
-var envelopeKinds = /* @__PURE__ */ new Map([
-  ["value", 1],
-  ["admission-result", 2],
-  ["invoke", 3],
-  ["program-failure", 4]
-]);
-var envelopeNames = new Map([
-  ...nativeArray([...envelopeKinds]).map(([name2, tag]) => [tag, name2]),
-  [5, "source-member-failure"]
-]);
-var MAXIMUM_LUA_VALUE_ABI_DEPTH = 128;
-function assertValueDepth(depth) {
-  if (depth > MAXIMUM_LUA_VALUE_ABI_DEPTH) {
-    throw luaResourceError(
-      "lua-vm.resource.depth-limit",
-      `ABI value exceeds ${MAXIMUM_LUA_VALUE_ABI_DEPTH} nested levels`
-    );
-  }
-}
-function encodeLuaValueAbiFrame(envelopeKind, semanticValue, iteration) {
-  const kind = envelopeKinds.get(envelopeKind);
-  if (kind === void 0) throw new Error(`lua-vm.value-abi.envelope-kind: ${String(envelopeKind)}`);
-  const payload = new ByteWriter(iteration);
-  if (envelopeKind === "value") {
-    encodeValue(semanticValue, payload, "value");
-  } else if (envelopeKind === "admission-result") {
-    const semantic = requireRecord(semanticValue, `envelope.${envelopeKind}`);
-    if (semantic.kind !== "admission-result") fail("shape", "admission result has the wrong semantic kind");
-    encodeValue(semantic.graph, payload, "admission.graph");
-    const exports = requireArray(semantic.exportsInCanonicalOrder, "admission.exportsInCanonicalOrder");
-    payload.u32(exports.length);
-    let prior;
-    for (const [index, nameValue] of exports.entries()) {
-      const name2 = encodeName(nameValue, `admission.exports[${index}]`);
-      if (prior !== void 0 && compareBytes(prior, name2) >= 0) fail("canonical-order", "export names are not strictly ordered");
-      payload.u32(name2.byteLength).bytes(name2);
-      prior = name2;
-    }
-  } else if (envelopeKind === "invoke") {
-    const semantic = requireRecord(semanticValue, `envelope.${envelopeKind}`);
-    if (semantic.kind !== "invoke") fail("shape", "invocation has the wrong semantic kind");
-    const name2 = encodeName(semantic.exportName, "invoke.exportName");
-    payload.u32(name2.byteLength).bytes(name2);
-    encodeValue(semantic.input, payload, "invoke.input");
-  } else {
-    const semantic = requireRecord(semanticValue, `envelope.${envelopeKind}`);
-    if (semantic.kind !== "program-failure") fail("shape", "program failure has the wrong semantic kind");
-    const name2 = encodeName(semantic.name, "program-failure.name");
-    payload.u32(name2.byteLength).bytes(name2);
-    encodeValue(semantic.details, payload, "program-failure.details");
-  }
-  const body = payload.finish();
-  return new ByteWriter(iteration).bytes(Uint8Array.of(80, 68, 82, 86, 1, kind)).u32(body.byteLength).bytes(body).finish();
-}
-function decodeLuaValueAbiFrame(frame) {
-  const reader = new ByteReader(frame);
-  if (!equalBytes(reader.bytes(4), Uint8Array.of(80, 68, 82, 86)) || reader.u8() !== 1) {
-    fail("frame-malformed", "wrong magic or version");
-  }
-  const kind = reader.u8();
-  const envelopeKind = envelopeNames.get(kind);
-  if (envelopeKind === void 0) fail("frame-malformed", `unknown envelope kind ${kind}`);
-  const length = reader.u32();
-  if (length !== reader.remaining) fail("frame-malformed", `payload declares ${length}, observed ${reader.remaining}`);
-  let semantic;
-  if (envelopeKind === "value") {
-    const value = decodeValue(reader, "value");
-    semantic = value.kind === "null" ? null : value;
-  } else if (envelopeKind === "admission-result") {
-    const graph = materialize(decodeValue(reader, "admission.graph"));
-    if (graph === null || typeof graph !== "object" || Array.isArray(graph)) fail("frame-malformed", "admission graph is not a record");
-    const count = reader.u32();
-    const exportsInCanonicalOrder = [];
-    let prior;
-    for (let index = 0; index < count; index += 1) {
-      const raw = reader.bytes(reader.u32());
-      const name2 = decodeName(raw, `admission.exports[${index}]`);
-      if (prior !== void 0 && compareBytes(prior, raw) >= 0) fail("frame-malformed", "export names are not canonical");
-      exportsInCanonicalOrder.push(name2);
-      prior = raw;
-    }
-    semantic = { kind: "admission-result", graph, exportsInCanonicalOrder };
-  } else if (envelopeKind === "invoke") {
-    const exportName = decodeName(reader.bytes(reader.u32()), "invoke.exportName");
-    semantic = { kind: "invoke", exportName, input: materialize(decodeValue(reader, "invoke.input")) };
-  } else if (envelopeKind === "program-failure") {
-    const name2 = decodeName(reader.bytes(reader.u32()), "program-failure.name");
-    semantic = { kind: "program-failure", name: name2, details: materialize(decodeValue(reader, "program-failure.details")) };
-  } else {
-    const member2 = decodeName(reader.bytes(reader.u32()), "source-member-failure.member");
-    const reasonTag = reader.u8();
-    const reason = reasonTag === 1 ? "missing" : reasonTag === 2 ? "initialization-failed" : void 0;
-    if (reason === void 0) fail("frame-malformed", `unknown source-member failure class ${reasonTag}`);
-    semantic = { kind: "source-member-failure", member: member2, reason };
-  }
-  if (reader.remaining !== 0) fail("frame-malformed", `${reader.remaining} trailing octets`);
-  return Object.freeze({ envelopeKind, semantic });
-}
-function encodeValue(value, writer, at, depth = 0) {
-  assertValueDepth(depth);
-  writer.iteration?.();
-  if (value === null) {
-    writer.u8(12).u32(0);
-    return;
-  }
-  if (typeof value === "boolean") {
-    writer.u8(value ? 2 : 1).u32(0);
-    return;
-  }
-  const node = requireRecord(value, at);
-  if (node.kind === "boolean") {
-    if (typeof node.value !== "boolean") fail("shape", `${at}.value must be boolean`);
-    writer.u8(node.value ? 2 : 1).u32(0);
-    return;
-  }
-  if (node.kind === "i64" || node.kind === "u64") {
-    const signed = node.kind === "i64";
-    const integer2 = parseDecimal(node.decimal, at);
-    const minimum = signed ? -(1n << 63n) : 0n;
-    const maximum = signed ? (1n << 63n) - 1n : (1n << 64n) - 1n;
-    if (integer2 < minimum || integer2 > maximum) fail("integer-range", `${at} is outside ${node.kind}`);
-    const unsigned2 = integer2 < 0 ? integer2 + (1n << 64n) : integer2;
-    const content = bigEndian(unsigned2, 8);
-    writer.u8(signed ? 3 : 4).u32(8).bytes(content);
-    return;
-  }
-  if (node.kind === "integer") {
-    const integer2 = parseDecimal(node.decimal, at);
-    const negative = integer2 < 0;
-    let magnitude = negative ? -integer2 : integer2;
-    const octets = [];
-    while (magnitude !== 0n) {
-      activeNativeScratch()?.work(1 + octets.length);
-      activeNativeScratch()?.reserve(16);
-      octets.unshift(Number(magnitude & 0xffn));
-      magnitude >>= 8n;
-    }
-    activeNativeScratch()?.reserve(8 + octets.length);
-    writer.u8(5).u32(1 + octets.length).u8(negative ? 1 : 0).bytes(Uint8Array.from(octets));
-    return;
-  }
-  if (node.kind === "float64") {
-    const number = Number(requireString(node.decimal, `${at}.decimal`));
-    if (!Number.isFinite(number)) fail("non-finite", `${at} is not finite`);
-    if (Object.is(number, -0)) fail("negative-zero", `${at} is negative zero`);
-    const content = new Uint8Array(8);
-    new DataView(content.buffer).setFloat64(0, number, false);
-    writer.u8(6).u32(8).bytes(content);
-    return;
-  }
-  if (node.kind === "text") {
-    const text2 = requireString(node.value, `${at}.value`);
-    assertUnicodeScalars(text2, at);
-    const content = encoder2.encode(text2);
-    writer.u8(7).u32(content.byteLength).bytes(content);
-    return;
-  }
-  if (node.kind === "bytes") {
-    const content = decodeHex(requireString(node.hex, `${at}.hex`), at, writer.iteration);
-    writer.u8(8).u32(content.byteLength).bytes(content);
-    return;
-  }
-  if (node.kind === "bytes-base64") {
-    writer.base64(requireString(node.value, `${at}.value`));
-    return;
-  }
-  if (node.kind === "bytes-buffer") {
-    if (!(node.value instanceof Uint8Array)) fail("frame-malformed", `${at}.value is not an owned byte buffer`);
-    writer.u8(8).u32(node.value.length).bytes(node.value);
-    return;
-  }
-  if (node.kind === "array") {
-    const items = requireArray(node.items, `${at}.items`);
-    writer.u8(9).region((content) => {
-      content.u32(items.length);
-      nativeArray(items).forEach((item2, index) => encodeValue(item2, content, `${at}[${index}]`, depth + 1));
-    });
-    return;
-  }
-  if (node.kind === "record" || node.kind === void 0) {
-    const entries = node.kind === "record" ? requireArray(node.entriesInCanonicalOrder, `${at}.entriesInCanonicalOrder`) : nativeSort(nativeEntries(node), ([left], [right]) => compareBytes(encodeText(left, at), encodeText(right, at)));
-    writer.u8(10).region((content) => {
-      content.u32(entries.length);
-      let prior;
-      for (const [index, entryValue] of entries.entries()) {
-        if (!Array.isArray(entryValue) || entryValue.length !== 2) fail("shape", `${at}.entries[${index}] must be a pair`);
-        const key = encodeText(requireString(entryValue[0], `${at}.key`), `${at}.key`);
-        if (prior !== void 0 && compareBytes(prior, key) >= 0) fail("canonical-order", `${at} keys are not strictly ordered`);
-        content.u32(key.byteLength).bytes(key);
-        encodeValue(entryValue[1], content, `${at}.${String(entryValue[0])}`, depth + 1);
-        prior = key;
-      }
-    });
-    return;
-  }
-  if (node.kind === "variant") {
-    const tag = encodeName(node.tag, `${at}.tag`);
-    writer.u8(11).region((content) => {
-      content.u32(tag.byteLength).bytes(tag);
-      encodeValue(node.value, content, `${at}.value`, depth + 1);
-    });
-    return;
-  }
-  if (node.kind === "forbidden-crossing") fail("forbidden-crossing", `${at} cannot cross the ABI`);
-  fail("value-kind", `${at} has unknown kind ${String(node.kind)}`);
-}
-function decodeValue(reader, at, depth = 0) {
-  assertValueDepth(depth);
-  activeNativeScratch()?.node();
-  const tag = reader.u8();
-  const content = reader.region(reader.u32());
-  let node;
-  if (tag === 1 || tag === 2) {
-    if (content.remaining !== 0) fail("frame-malformed", `${at} boolean has content`);
-    node = { kind: "boolean", value: tag === 2 };
-  } else if (tag === 3 || tag === 4) {
-    if (content.remaining !== 8) fail("frame-malformed", `${at} fixed integer is not eight octets`);
-    let integer2 = unsignedBigInt(content.bytes(8));
-    if (tag === 3 && (integer2 & 1n << 63n) !== 0n) integer2 -= 1n << 64n;
-    node = { kind: tag === 3 ? "i64" : "u64", decimal: integer2.toString() };
-  } else if (tag === 5) {
-    const sign = content.u8();
-    const magnitudeBytes = content.bytes(content.remaining);
-    if (sign > 1 || magnitudeBytes.byteLength === 0 && sign !== 0 || magnitudeBytes[0] === 0) {
-      fail("frame-malformed", `${at} arbitrary integer is not minimal`);
-    }
-    const magnitude = unsignedBigInt(magnitudeBytes);
-    node = { kind: "integer", decimal: (sign === 1 ? -magnitude : magnitude).toString() };
-  } else if (tag === 6) {
-    if (content.remaining !== 8) fail("frame-malformed", `${at} float is not eight octets`);
-    const bytes = content.bytes(8);
-    const number = new DataView(bytes.buffer, bytes.byteOffset, 8).getFloat64(0, false);
-    if (!Number.isFinite(number)) fail("non-finite", `${at} is not finite`);
-    if (Object.is(number, -0)) fail("negative-zero", `${at} is negative zero`);
-    node = { kind: "float64", decimal: String(number) };
-  } else if (tag === 7) {
-    node = { kind: "text", value: decodeName(content.bytes(content.remaining), at, true) };
-  } else if (tag === 8) {
-    activeNativeScratch()?.reserve(8 + content.remaining * 24);
-    activeNativeScratch()?.work(content.remaining * 3);
-    node = { kind: "bytes", hex: nativeArray([...content.bytes(content.remaining)]).map(hexOctet).join("") };
-  } else if (tag === 9) {
-    const count = content.u32();
-    const items = [];
-    for (let index = 0; index < count; index += 1) {
-      const item2 = decodeValue(content, `${at}[${index}]`, depth + 1);
-      items.push(item2.kind === "boolean" ? item2.value : item2);
-    }
-    node = { kind: "array", items };
-  } else if (tag === 10) {
-    const count = content.u32();
-    const entriesInCanonicalOrder = [];
-    let prior;
-    for (let index = 0; index < count; index += 1) {
-      const raw = content.bytes(content.u32());
-      if (prior !== void 0 && compareBytes(prior, raw) >= 0) fail("frame-malformed", `${at} keys are not canonical`);
-      const key = decodeName(raw, `${at}.key[${index}]`);
-      const value = decodeValue(content, `${at}.${key}`, depth + 1);
-      entriesInCanonicalOrder.push([key, value.kind === "boolean" ? value.value : value]);
-      prior = raw;
-    }
-    node = { kind: "record", entriesInCanonicalOrder };
-  } else if (tag === 11) {
-    const variant = decodeName(content.bytes(content.u32()), `${at}.tag`);
-    const value = decodeValue(content, `${at}.value`, depth + 1);
-    node = { kind: "variant", tag: variant, value: value.kind === "boolean" ? value.value : value };
-  } else if (tag === 12) {
-    if (content.remaining !== 0) fail("frame-malformed", `${at} null has content`);
-    node = { kind: "null" };
-  } else {
-    fail("frame-malformed", `${at} has unknown tag ${tag}`);
-  }
-  if (content.remaining !== 0) fail("frame-malformed", `${at} leaves ${content.remaining} content octets`);
-  return node;
-}
-function materialize(node) {
-  activeNativeScratch()?.node();
-  if (node.kind === "null") return null;
-  if (node.kind === "boolean" || node.kind === "text") return node.value;
-  if (node.kind === "array") return nativeArray(node.items).map((item2) => isValueNode(item2) ? materialize(item2) : item2);
-  if (node.kind === "record") return nativeRecord(
-    nativeArray(node.entriesInCanonicalOrder).map(([key, value]) => [key, isValueNode(value) ? materialize(value) : value])
-  );
-  if (node.kind === "variant") return {
-    kind: "variant",
-    tag: node.tag,
-    value: isValueNode(node.value) ? materialize(node.value) : node.value
-  };
-  return node;
-}
-function isValueNode(value) {
-  return value !== null && typeof value === "object" && typeof value.kind === "string";
-}
-function requireRecord(value, at) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) fail("shape", `${at} must be a record`);
-  return value;
-}
-function requireArray(value, at) {
-  if (!Array.isArray(value)) fail("shape", `${at} must be an array`);
-  return value;
-}
-function requireString(value, at) {
-  if (typeof value !== "string") fail("shape", `${at} must be a string`);
-  return value;
-}
-function parseDecimal(value, at) {
-  const decimal = requireString(value, `${at}.decimal`);
-  activeNativeScratch()?.text(decimal);
-  if (!/^-?(?:0|[1-9][0-9]*)$/u.test(decimal) || decimal === "-0") fail("integer-spelling", `${at} is not canonical decimal`);
-  return BigInt(decimal);
-}
-function encodeName(value, at) {
-  const text2 = requireString(value, at);
-  if (text2.length === 0) fail("name-empty", `${at} must not be empty`);
-  return encodeText(text2, at);
-}
-function encodeText(text2, at) {
-  assertUnicodeScalars(text2, at);
-  return encoder2.encode(text2);
-}
-function decodeName(bytes, at, allowEmpty = false) {
-  activeNativeScratch()?.reserve(8 + bytes.length * 3);
-  activeNativeScratch()?.work(bytes.length);
-  let text2;
-  try {
-    text2 = decoder.decode(bytes);
-  } catch {
-    fail("invalid-utf8", `${at} is not fatal UTF-8`);
-  }
-  if (!allowEmpty && text2.length === 0) fail("name-empty", `${at} must not be empty`);
-  return text2;
-}
-function assertUnicodeScalars(value, at) {
-  activeNativeScratch()?.reserve(8 + value.length * 3);
-  for (let index = 0; index < value.length; index += 1) {
-    activeNativeScratch()?.iteration();
-    const unit = value.charCodeAt(index);
-    if (unit >= 55296 && unit <= 56319) {
-      const next = value.charCodeAt(index + 1);
-      if (index + 1 >= value.length || next < 56320 || next > 57343) {
-        fail("lone-surrogate", `${at} contains an unpaired high surrogate`);
-      }
-      index += 1;
-    } else if (unit >= 56320 && unit <= 57343) {
-      fail("lone-surrogate", `${at} contains an unpaired low surrogate`);
-    }
-  }
-}
-function decodeHex(value, at, iteration) {
-  activeNativeScratch()?.work(value.length);
-  activeNativeScratch()?.reserve(8 + Math.ceil(value.length / 2));
-  if (value.length % 2 !== 0 || !/^[0-9a-f]*$/u.test(value)) fail("hex", `${at} is not lowercase whole-octet hex`);
-  const bytes = new Uint8Array(value.length / 2);
-  for (let index = 0; index < bytes.length; index += 1) {
-    (iteration ?? activeNativeScratch()?.iteration)?.();
-    bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
-  }
-  return bytes;
-}
-function bigEndian(value, length) {
-  const bytes = new Uint8Array(length);
-  for (let index = length - 1; index >= 0; index -= 1) {
-    bytes[index] = Number(value & 0xffn);
-    value >>= 8n;
-  }
-  return bytes;
-}
-function unsignedBigInt(bytes) {
-  activeNativeScratch()?.reserve(8 + bytes.length * 6);
-  let value = 0n;
-  for (const octet of bytes) {
-    activeNativeScratch()?.iteration();
-    value = value << 8n | BigInt(octet);
-  }
-  return value;
-}
-function compareBytes(left, right) {
-  const shared = Math.min(left.byteLength, right.byteLength);
-  for (let index = 0; index < shared; index += 1) {
-    activeNativeScratch()?.iteration();
-    if (left[index] !== right[index]) return (left[index] ?? 0) - (right[index] ?? 0);
-  }
-  return left.byteLength - right.byteLength;
-}
-function equalBytes(left, right) {
-  return left.byteLength === right.byteLength && nativeArray(left).every((octet, index) => octet === right[index]);
-}
-function hexOctet(value) {
-  return value.toString(16).padStart(2, "0");
-}
-function fail(code, detail) {
-  throw new Error(`lua-vm.value-abi.${code}: ${detail}`);
-}
-var ByteWriter = class _ByteWriter {
-  #bytes = [];
-  #target;
-  #offset = 0;
-  iteration;
-  #storage = activeNativeScratch()?.child();
-  #finished = false;
-  constructor(iteration = activeNativeScratch()?.iteration, target) {
-    this.#storage?.reserve(8);
-    this.iteration = iteration;
-    this.#target = target;
-  }
-  u8(value) {
-    if (this.#finished) throw new Error("finished ABI writer");
-    if (this.#target) {
-      if (this.#offset >= this.#target.length) fail("capacity", "direct invocation exceeds reserved input");
-      this.#target[this.#offset++] = value & 255;
-    } else {
-      this.#storage?.reserve(16);
-      this.#bytes.push(value & 255);
-    }
-    return this;
-  }
-  u32(value) {
-    if (!Number.isSafeInteger(value) || value < 0 || value > 4294967295) fail("length", `invalid u32 ${value}`);
-    this.u8(value >>> 24).u8(value >>> 16).u8(value >>> 8).u8(value);
-    return this;
-  }
-  bytes(value) {
-    for (let index = 0; index < value.byteLength; index += 1) {
-      this.iteration?.();
-      this.u8(value[index] ?? 0);
-    }
-    return this;
-  }
-  region(fill) {
-    if (!this.#target) {
-      const append = () => {
-        const content = new _ByteWriter(this.iteration);
-        fill(content);
-        const bytes = content.finish();
-        return this.u32(bytes.length).bytes(bytes);
-      };
-      return activeNativeScratch()?.transient(append) ?? append();
-    }
-    const start = this.#offset;
-    this.u32(0);
-    fill(this);
-    new DataView(this.#target.buffer, this.#target.byteOffset + start, 4).setUint32(0, this.#offset - start - 4, false);
-    return this;
-  }
-  base64(value) {
-    if (!this.#target) fail("value-kind", "base64 leaf is restricted to the direct host encoder");
-    if (value.length % 4) fail("base64", "incomplete quartet");
-    const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
-    const length = value.length / 4 * 3 - padding;
-    this.u8(8).u32(length);
-    const digit = (index) => {
-      const c = value.charCodeAt(index);
-      if (c >= 65 && c <= 90) return c - 65;
-      if (c >= 97 && c <= 122) return c - 71;
-      if (c >= 48 && c <= 57) return c + 4;
-      if (c === 43) return 62;
-      if (c === 47) return 63;
-      return fail("base64", "invalid alphabet or misplaced padding");
-    };
-    const emit = (byte) => {
-      this.iteration?.();
-      this.u8(byte);
-    };
-    for (let i = 0; i < value.length; i += 4) {
-      const a = digit(i), b = digit(i + 1), remaining = length - i / 4 * 3;
-      if (remaining === 1) {
-        if (value.slice(i + 2) !== "==" || b & 15) fail("base64", "noncanonical final octet");
-        emit(a << 2 | b >> 4);
-      } else {
-        const c = digit(i + 2);
-        if (remaining === 2) {
-          if (value[i + 3] !== "=" || c & 3) fail("base64", "noncanonical final pair");
-          emit(a << 2 | b >> 4);
-          emit(b << 4 | c >> 2);
-        } else {
-          const d = digit(i + 3);
-          emit(a << 2 | b >> 4);
-          emit(b << 4 | c >> 2);
-          emit(c << 6 | d);
-        }
-      }
-    }
-  }
-  finish() {
-    if (this.#finished) throw new Error("finished ABI writer");
-    if (this.#target) {
-      this.#finished = true;
-      this.#storage?.close();
-      return this.#target.subarray(0, this.#offset);
-    }
-    activeNativeScratch()?.reserve(8 + this.#bytes.length);
-    const bytes = new Uint8Array(this.#bytes.length);
-    for (let i = 0; i < bytes.length; i++) {
-      this.iteration?.();
-      bytes[i] = this.#bytes[i];
-    }
-    this.#finished = true;
-    this.#bytes.length = 0;
-    this.#storage?.close();
-    return bytes;
-  }
-};
-var ByteReader = class _ByteReader {
-  #offset = 0;
-  source;
-  constructor(source) {
-    this.source = source;
-  }
-  get remaining() {
-    return this.source.byteLength - this.#offset;
-  }
-  u8() {
-    return this.bytes(1)[0] ?? fail("frame-malformed", "missing octet");
-  }
-  u32() {
-    const bytes = this.bytes(4);
-    return (bytes[0] ?? 0) * 16777216 + ((bytes[1] ?? 0) << 16) + ((bytes[2] ?? 0) << 8) + (bytes[3] ?? 0) >>> 0;
-  }
-  bytes(length) {
-    if (!Number.isSafeInteger(length) || length < 0 || length > this.remaining) fail("frame-malformed", `need ${length}, have ${this.remaining}`);
-    const bytes = this.source.subarray(this.#offset, this.#offset + length);
-    this.#offset += length;
-    return bytes;
-  }
-  region(length) {
-    return new _ByteReader(this.bytes(length));
-  }
-};
-
-// ../../packages/lua-vm/src/retained.ts
-var RETAINED_VM_SHA256 = "f0646d258acf98a02eabf678aea7ae90f118fca6e1014515ffbdb95987c54e37";
-var DEFAULT_RETAINED_EFFECT_WORK = 32e6;
-var RETAINED_LUA_FUEL = 1e6;
-var RETAINED_ADMISSION_LUA_FUEL = 1e5;
-function retainedVmFailure(status, fuelConsumed, phase) {
-  const resource = status === -17 ? "allocation-limit" : status === -18 ? "fuel-exhausted" : status === -28 ? "depth-limit" : status === -26 || phase === "admission" && status === -2 ? "output-limit" : void 0;
-  const error = resource === void 0 ? environmentFailure(status) : luaResourceError(`lua-vm.resource.${resource}`, "retained Lua execution failed");
-  error.message += ` (${phase}, VM status ${status})`;
-  Object.defineProperties(error, {
-    fuelConsumed: { value: fuelConsumed, enumerable: true },
-    vmStatus: { value: status, enumerable: true },
-    phase: { value: phase, enumerable: true }
-  });
-  return error;
-}
-function resolveRetainedLuaPolicy(request2 = {}) {
-  if (nativeArray(nativeKeys(request2)).some((key) => !["maximumEncodedInputBytes", "maximumEncodedOutputBytes", "maximumVmAllocationBytes"].includes(key)))
-    throw luaResourceError("lua-vm.resource.policy-limit", "unsupported retained byte/allocation policy member");
-  const policy = resolveLuaResourcePolicy(request2);
-  return Object.freeze({
-    maximumEncodedInputBytes: policy.maximumEncodedInputBytes,
-    maximumEncodedOutputBytes: policy.maximumEncodedOutputBytes,
-    maximumVmAllocationBytes: policy.maximumVmAllocationBytes
-  });
-}
-var dispatcher = `
-local type,error,fields,sort=type,error,pdrv.record_fields,table.sort
-local create,resume,status,yield=coroutine.create,coroutine.resume,coroutine.status,coroutine.yield
-local readonly,array,null=pdrv.readonly,pdrv.array,pdrv.null
-local char,unpack=string.char,table.unpack
-local description,callables=pdrv.entry()
-local bindings={}
-local resolved={}
-if type(callables)~="table" then error("callable table required") end
-for name,fn in fields(callables) do
-  if type(name)~="string" or type(fn)~="function" then error("invalid callable binding") end
-  bindings[#bindings+1]=name
-  resolved[name]=fn
-end
-sort(bindings)
-local invalidation=description.invalidation and resolved[description.invalidation]
-local tasks={}
-local function dispatch(input)
-  local action,key=input.action,input.id
-  if action=="retire" then tasks[key]=nil; return {kind="retired"} end
-  if action=="invalidate" then
-    if invalidation then invalidation(input.value) end
-    return {kind="invalidated"}
-  end
-  if action=="start" then
-    local fn=resolved[input.binding]
-    if type(fn)~="function" then error("unresolved binding") end
-    local api=readonly({request=function(effect) return yield(effect) end,resultDestination=input.destination})
-    local arguments=input.arguments
-    if input.octets then arguments=readonly({input=char(unpack(input.octets)),sequence=arguments.sequence,channelId=arguments.channelId,observation=arguments.observation}) end
-    if input.relayOctets then
-      local request={}
-      for name,value in fields(arguments) do request[name]=value end
-      request.bytes=input.relayOctets
-      arguments=readonly(request)
-    end
-    tasks[key]=create(function()
-      if input.context and input.context.reentryRequired then
-        local enter=resolved[input.context.reentryBinding]
-        if type(enter)~="function" then error("unresolved reentry") end
-        if enter(readonly({modeId=input.context.modeId,profileId=input.context.profileId}),api,input.context)~=nil then
-          error("reentry must return nil")
-        end
-      end
-      local result=fn(arguments,api,input.context)
-      if result==nil then result=null end
-      return {kind="result",value=result}
-    end)
-  end
-  -- Public byte-valued arguments remain immutable ABI boundary values. A
-  -- channel completion instead becomes the raw Lua string protocol code can
-  -- parse. The host supplies bounded octets, never UTF-8-decoded payload text.
-  local value=input.value
-  if action=="resume" and input.octets then value=(input.waitPrefix or "")..char(unpack(input.octets)) end
-  if action=="resume" and input.rawOctets then value=(input.waitPrefix or "")..input.rawOctets end
-  local ok,result=resume(tasks[key],value)
-  if not ok then error(result) end
-  local ended=status(tasks[key])=="dead"
-  if ended then tasks[key]=nil end
-  -- Outside the authored value: yielding a result is not coroutine death.
-  return {ended=ended,value=result}
-end
-return {description=description,bindings=array(bindings)},{dispatch=dispatch}
-`;
-function abi(value) {
-  activeNativeScratch()?.node();
-  if (typeof value === "string") activeNativeScratch()?.text(value);
-  if (value instanceof Uint8Array) activeNativeScratch()?.reserve(16);
-  if (value === null || typeof value === "boolean") return value;
-  if (typeof value === "string") return { kind: "text", value };
-  if (typeof value === "number") return { kind: "float64", decimal: String(value) };
-  if (typeof value === "bigint") return { kind: "integer", decimal: String(value) };
-  if (value instanceof Uint8Array) return { kind: "bytes-buffer", value };
-  if (Array.isArray(value)) return { kind: "array", items: nativeArray(value).map(abi) };
-  if (value && typeof value === "object") return { kind: "record", entriesInCanonicalOrder: nativeArray(nativeSort(nativeEntries(value), ([a], [b]) => a < b ? -1 : a > b ? 1 : 0)).map(([key, v]) => [key, abi(v)]) };
-  throw new Error("retained ABI input is not a supported value");
-}
-function argumentAbi(value, schema, iteration, directBytes = false) {
-  iteration?.();
-  activeNativeScratch()?.reserve(8);
-  if (schema.kind === "record") return { kind: "record", entriesInCanonicalOrder: nativeSort(nativeArray(nativeKeys(schema.fields))).map((key) => [key, argumentAbi(value[key], schema.fields[key], iteration, directBytes)]) };
-  if (schema.kind === "array") return { kind: "array", items: nativeArray(value).map((item2) => argumentAbi(item2, schema.item, iteration, directBytes)) };
-  if (schema.kind === "variant") {
-    const v = value;
-    return { kind: "record", entriesInCanonicalOrder: [["kind", abi("variant")], ["tag", abi(v.tag)], ["value", argumentAbi(v.value, schema.variants[v.tag], iteration, directBytes)]] };
-  }
-  if (schema.kind === "integer") return { kind: schema.signed ? "i64" : "u64", decimal: typeof value === "number" ? String(value) : value.value };
-  if (schema.kind === "decimal") return abi(value.value);
-  if (schema.kind === "bytes") {
-    if (directBytes) return { kind: "bytes-base64", value: value.value };
-    activeNativeScratch()?.text(value.value);
-    const bytes = atob(value.value);
-    let hex2 = "";
-    for (let i = 0; i < bytes.length; i++) {
-      iteration?.();
-      hex2 += bytes.charCodeAt(i).toString(16).padStart(2, "0");
-    }
-    return { kind: "bytes", hex: hex2 };
-  }
-  return abi(value);
-}
-function invocationSemantic(request2, types, iteration, directBytes = false) {
-  const semantic = abi(types ? { ...request2, arguments: null } : request2);
-  if (types) {
-    const args = request2.arguments;
-    semantic.entriesInCanonicalOrder.find(([key]) => key === "arguments")[1] = {
-      kind: "record",
-      entriesInCanonicalOrder: nativeSort(nativeArray(nativeKeys(types))).map((key) => [key, argumentAbi(args[key], types[key], iteration, directBytes)])
-    };
-  }
-  return semantic;
-}
-function assertSourceDeclarationPolicy(operation, maximum) {
-  const args = {}, types = {};
-  let payload = 0;
-  for (const [name2, type2] of nativeEntries(operation.arguments)) if (type2.kind === "byte-source") {
-    args[name2] = { type: "bytes", encoding: "base64", value: "" };
-    types[name2] = { kind: "bytes" };
-    payload += type2.maximumBytes;
-  }
-  if (!nativeKeys(types).length) return;
-  const semantic = invocationSemantic({
-    action: "start",
-    id: "retained-operation-0",
-    binding: operation.binding,
-    arguments: args,
-    value: null,
-    destination: null
-  }, types);
-  if (encodeLuaProgramInvocation("dispatch", semantic).length + payload > maximum)
-    throw luaResourceError("lua-vm.resource.input-limit", "declared source population cannot fit complete invocation policy");
-}
-function exactIntegers(node, value) {
-  activeNativeScratch()?.node();
-  if (!node || typeof node !== "object") return value;
-  const n = node;
-  if (["i64", "u64", "integer"].includes(n.kind)) {
-    activeNativeScratch()?.text(n.decimal);
-    return BigInt(n.decimal);
-  }
-  if (n.kind === "array") return nativeArray(n.items).map((child, i) => exactIntegers(child, value[i]));
-  if (n.kind === "record") return nativeRecord(nativeArray(n.entriesInCanonicalOrder).map(([key, child]) => [key, exactIntegers(child, value[key])]));
-  if (n.kind === "variant") return { ...value, value: exactIntegers(n.value, value.value) };
-  return value;
-}
-function effectNumbers(value) {
-  activeNativeScratch()?.node();
-  if (typeof value === "bigint") return value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value;
-  if (Array.isArray(value)) return nativeArray(value).map(effectNumbers);
-  if (value && typeof value === "object" && !(value instanceof Uint8Array)) return nativeRecord(nativeArray(nativeEntries(value)).map(([key, child]) => [key, effectNumbers(child)]));
-  return value;
-}
-async function openRetainedLua(source, artifact, request2 = {}, nativeData = new StandaloneNativeData()) {
-  const policy = resolveRetainedLuaPolicy(request2);
-  const bytes = artifact.slice();
-  const digest2 = nativeArray([...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]).map((v) => v.toString(16).padStart(2, "0")).join("");
-  if (digest2 !== RETAINED_VM_SHA256) throw new Error("authored.vm.digest-mismatch");
-  let e;
-  let chargeEncoding, encodingFailure;
-  let poisoned = false, allocationSerial = 0;
-  const scratch = /* @__PURE__ */ new Map();
-  const hostScratch = /* @__PURE__ */ new Set();
-  const failureScratch = /* @__PURE__ */ new Map();
-  const nativeWork = (units) => {
-    if (encodingFailure !== void 0) throw encodingFailure;
-    if (!chargeEncoding) throw new Error("authored.vm.encoding-account-missing");
-    chargeEncoding(units);
-  };
-  const forbidden = () => {
-    throw new Error("authored.vm.forbidden-host-call");
-  };
-  const { instance } = await WebAssembly.instantiate(bytes, {
-    env: {
-      emscripten_notify_memory_growth() {
-      },
-      __syscall_dup3: forbidden,
-      pdrv_retained_work(units) {
-        try {
-          nativeWork(units);
-        } catch (cause) {
-          poisoned = true;
-          encodingFailure = cause;
-          throw cause;
-        }
-      },
-      pdrv_retained_reserve(capacity) {
-        try {
-          if (allocationSerial === 4294967295) throw luaResourceError("retained.helper-data-exhausted", "scratch identity exhausted");
-          const held = (activeNativeScratch()?.dataAccount ?? nativeData).reserve(capacity);
-          const id = ++allocationSerial;
-          scratch.set(id, held);
-          return id;
-        } catch (cause) {
-          poisoned = true;
-          encodingFailure = cause;
-          throw cause;
-        }
-      },
-      pdrv_retained_release(id) {
-        const held = scratch.get(id);
-        if (!held) throw new Error("authored.vm.scratch-ownership");
-        held.release();
-        scratch.delete(id);
-      },
-      pdrv_retained_charge_work(units) {
-        if (encodingFailure !== void 0) return 0;
-        try {
-          if (!chargeEncoding) throw new Error("authored.vm.encoding-account-missing");
-          chargeEncoding(units);
-          return 1;
-        } catch (cause) {
-          encodingFailure = cause;
-          return 0;
-        }
-      },
-      pdrv_lua_require_source(np, nl, out, capacity) {
-        try {
-          activeNativeScratch()?.reserve(8 + nl * 3);
-          nativeWork(nl);
-          const name2 = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(e.memory.buffer, np, nl));
-          const owned = source.sourceBytes(name2, (length) => {
-            activeNativeScratch()?.reserve(8 + length);
-            nativeWork(1 + Math.ceil(length / 256));
-          });
-          if (!owned) return -1;
-          if (!capacity) return owned.length;
-          if (owned.length > capacity) return -1;
-          nativeWork(1 + Math.ceil(owned.length / 256));
-          new Uint8Array(e.memory.buffer, out, owned.length).set(owned);
-          return owned.length;
-        } catch (cause) {
-          poisoned = true;
-          encodingFailure = cause;
-          throw cause;
-        }
-      }
-    },
-    wasi_snapshot_preview1: { fd_read: forbidden, fd_write: forbidden, fd_close: forbidden, fd_seek: forbidden }
-  });
-  e = instance.exports;
-  e._initialize();
-  if (e.pdrv_lua_vm_smoke() !== 42 || typeof e.pdrv_retained_result_encode !== "function") throw new Error("authored.vm.contract-mismatch");
-  const inputCapacity = policy.maximumEncodedInputBytes;
-  let outputCapacity = policy.maximumEncodedOutputBytes, output = e.malloc(outputCapacity);
-  const input = e.malloc(inputCapacity), fuel = e.malloc(4), handleOut = e.malloc(4);
-  let handle = 0, closed = false;
-  const accounts = /* @__PURE__ */ new Map();
-  const workChargers = /* @__PURE__ */ new Map();
-  const endedTasks = /* @__PURE__ */ new Set();
-  const sourceInputMeters = /* @__PURE__ */ new Map();
-  const retainedAccounts = /* @__PURE__ */ new Map();
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    accounts.clear();
-    retainedAccounts.clear();
-    workChargers.clear();
-    endedTasks.clear();
-    sourceInputMeters.clear();
-    try {
-      if (!poisoned) {
-        e.pdrv_retained_scratch_clear();
-        if (handle) e.pdrv_retained_result_close(handle);
-        for (const p of [input, output, fuel, handleOut]) if (p) e.free(p);
-      }
-    } finally {
-      for (const held of scratch.values()) held.release();
-      scratch.clear();
-      for (const scope of hostScratch) scope.close();
-      hostScratch.clear();
-      failureScratch.clear();
-      if (poisoned) e = void 0;
-    }
-  };
-  const put = (v) => {
-    if (v.length > inputCapacity) throw luaResourceError("lua-vm.resource.input-limit", "encoded input exceeds resolved policy");
-    activeNativeScratch()?.work(1 + Math.ceil(v.length / 256));
-    new Uint8Array(e.memory.buffer, input, v.length).set(v);
-  };
-  try {
-    if (!input || !output || !fuel || !handleOut) throw new Error("authored.vm.allocation-failed");
-    const code = new TextEncoder().encode(dispatcher);
-    put(code);
-    let admissionWork = 0;
-    chargeEncoding = (units) => {
-      if (admissionWork + units > 1e5) throw luaResourceError("retained.work-exhausted", "native admission work exhausted");
-      admissionWork += units;
-    };
-    const admissionScratch = new NativeScratch(nativeData, nativeWork);
-    hostScratch.add(admissionScratch);
-    admissionScratch.reserve(8 + 64 * 64);
-    withNativeScratch(admissionScratch, () => {
-      const entry = source.sourceBytes("device.lua", (length) => {
-        admissionScratch.reserve(8 + length);
-        admissionScratch.work(1 + Math.ceil(length / 256));
-      });
-      if (!entry) throw new Error("authored.entry.missing");
-    });
-    let result;
-    try {
-      result = withNativeScratch(admissionScratch, () => e.pdrv_retained_result_open(input, code.length, output, outputCapacity, policy.maximumVmAllocationBytes, RETAINED_ADMISSION_LUA_FUEL, fuel, handleOut));
-    } finally {
-      if (!poisoned) e.pdrv_retained_scratch_clear();
-    }
-    handle = new DataView(e.memory.buffer).getUint32(handleOut, true);
-    if (encodingFailure) throw encodingFailure;
-    if (result < 0) throw retainedVmFailure(result, new DataView(e.memory.buffer).getUint32(fuel, true), "admission");
-    if (!handle) throw new Error("authored.vm.admission-handle-missing");
-    const admission = withNativeScratch(admissionScratch, () => {
-      admissionScratch.reserve(8 + result);
-      admissionScratch.work(1 + Math.ceil(result / 256));
-      return requireLuaAdmissionResult(decodeLuaValueAbiFrame(new Uint8Array(e.memory.buffer, output, result).slice()));
-    });
-    const graph = admission.graph;
-    e.free(output);
-    output = 0;
-    outputCapacity = Math.max(1, Math.ceil(policy.maximumEncodedOutputBytes / 16));
-    output = e.malloc(outputCapacity);
-    if (!output) throw new Error("authored.vm.allocation-failed");
-    const [handlerBindings, authorizationBindings] = withNativeScratch(admissionScratch, () => {
-      const handlers = graph.description.handlers ?? [];
-      admissionScratch.reserve(16 + handlers.length * 64);
-      admissionScratch.work(handlers.length * 2);
-      return [
-        new Set(nativeArray(handlers).map((handler) => handler.binding)),
-        new Set(nativeArray(handlers).map((handler) => handler.authorizeWrite))
-      ];
-    });
-    chargeEncoding = void 0;
-    const invoke = (id, request3, argumentTypes) => {
-      if (closed || !accounts.has(id)) throw new Error("authored.vm.account-revoked");
-      const remaining = accounts.get(id).maximumFuel - accounts.get(id).consumed;
-      if (remaining <= 0) {
-        close();
-        throw retainedVmFailure(-18, 0, "dispatch");
-      }
-      new DataView(e.memory.buffer).setUint32(fuel, 0, true);
-      encodingFailure = void 0;
-      chargeEncoding = (units) => {
-        const account = accounts.get(id);
-        const charge = workChargers.get(id);
-        if (charge) charge(units);
-        else if (account.work + units > DEFAULT_RETAINED_EFFECT_WORK) throw luaResourceError("retained.work-exhausted", "native encoding work exhausted");
-        account.work += units;
-      };
-      const caller = activeNativeScratch();
-      const data = caller?.owner === id ? caller.dataAccount : nativeData;
-      const inputScope = new NativeScratch(data, nativeWork, id);
-      hostScratch.add(inputScope);
-      const scope = new NativeScratch(data, nativeWork, id);
-      hostScratch.add(scope);
-      let authoredFailure = false;
-      try {
-        const { count, consumed } = withNativeScratch(inputScope, () => {
-          request3 = typeof request3 === "function" ? request3() : request3;
-          const direct = argumentTypes !== void 0 && (sourceInputMeters.has(id) || request3.relayOctets instanceof Uint8Array);
-          const iteration = inputScope.iteration;
-          const semantic = invocationSemantic(request3, argumentTypes, iteration, direct);
-          let encodedLength;
-          if (direct) encodedLength = encodeLuaProgramInvocationInto(
-            "dispatch",
-            semantic,
-            new Uint8Array(e.memory.buffer, input, inputCapacity),
-            iteration
-          );
-          else {
-            const encoded = encodeLuaProgramInvocation("dispatch", semantic, iteration);
-            put(encoded);
-            encodedLength = encoded.length;
-          }
-          let count2;
-          count2 = e.pdrv_retained_result_dispatch(handle, input, encodedLength, output, outputCapacity, remaining, fuel);
-          while (count2 === -26 && outputCapacity < policy.maximumEncodedOutputBytes) {
-            e.free(output);
-            output = 0;
-            outputCapacity = policy.maximumEncodedOutputBytes;
-            output = e.malloc(outputCapacity);
-            if (!output) throw new Error("authored.vm.allocation-failed");
-            count2 = e.pdrv_retained_result_encode(handle, output, outputCapacity);
-          }
-          const consumed2 = new DataView(e.memory.buffer).getUint32(fuel, true);
-          accounts.get(id).consumed += consumed2;
-          if (encodingFailure) throw encodingFailure;
-          if (count2 < 0) throw retainedVmFailure(count2, consumed2, "dispatch");
-          return { count: count2, consumed: consumed2 };
-        });
-        inputScope.close();
-        hostScratch.delete(inputScope);
-        return withNativeScratch(scope, () => {
-          activeNativeScratch()?.reserve(8 + count);
-          activeNativeScratch()?.work(1 + Math.ceil(count / 256));
-          const decoded = decodeLuaValueAbiFrame(new Uint8Array(e.memory.buffer, output, count).slice());
-          authoredFailure = decoded.envelopeKind === "program-failure";
-          let value = exactIntegers(decoded.semantic, requireLuaProgramInvocationOutcome(decoded).value);
-          const action = request3.action;
-          if (action === "start" || action === "resume") {
-            scope.work(2);
-            if (!value || typeof value !== "object" || !("ended" in value) || typeof value.ended !== "boolean" || !("value" in value))
-              throw new Error("authored.vm.invalid-task-envelope");
-            if (value.ended) endedTasks.add(id);
-            value = value.value;
-          }
-          return {
-            value: value && typeof value === "object" && "kind" in value && value.kind !== "result" ? effectNumbers(value) : value,
-            consumed,
-            release() {
-              scope.close();
-              hostScratch.delete(scope);
-            }
-          };
-        });
-      } catch (cause) {
-        if (!closed && cause instanceof Error && !Object.hasOwn(cause, "fuelConsumed"))
-          Object.defineProperty(cause, "fuelConsumed", { value: new DataView(e.memory.buffer).getUint32(fuel, true), enumerable: true });
-        if (authoredFailure && !encodingFailure && !poisoned) {
-          inputScope.close();
-          hostScratch.delete(inputScope);
-          failureScratch.set(id, scope);
-        } else close();
-        throw cause;
-      } finally {
-        if (!closed && !poisoned) e.pdrv_retained_scratch_clear();
-        chargeEncoding = void 0;
-      }
-    };
-    const admissionRun = (run) => {
-      if (closed) throw new Error("authored.vm.account-revoked");
-      chargeEncoding = (units) => {
-        if (admissionWork + units > 1e5) throw luaResourceError("retained.work-exhausted", "native admission work exhausted");
-        admissionWork += units;
-      };
-      try {
-        return withNativeScratch(admissionScratch, run);
-      } finally {
-        chargeEncoding = void 0;
-      }
-    };
-    return {
-      description: graph.description,
-      bindings: Object.freeze([...graph.bindings]),
-      admission: admissionRun,
-      execution: {
-        // Trusted composition only; no method/account crosses a session wire.
-        // Construction after description validation spends the SAME bounded
-        // effect-free evaluation account, not a third admission allowance.
-        admission: admissionRun,
-        get terminated() {
-          return closed;
-        },
-        preflightSourceInput(id, binding, args, types, lengths, iteration, destination, context) {
-          const scope = new NativeScratch(nativeData, (units) => {
-            for (let i = 0; i < units; i++) iteration();
-          });
-          try {
-            return withNativeScratch(scope, () => {
-              const empty = { ...args };
-              for (const key of nativeKeys(lengths)) {
-                iteration();
-                empty[key] = { type: "bytes", encoding: "base64", value: "" };
-              }
-              const semantic = invocationSemantic({ action: "start", id, binding, arguments: empty, value: null, destination: destination ?? null, ...context ? { context } : {} }, types, iteration);
-              const maximum = encodeLuaProgramInvocation("dispatch", semantic, iteration).length + nativeArray(nativeValues(lengths)).reduce((a, b) => a + b, 0);
-              if (maximum > inputCapacity) throw luaResourceError("lua-vm.resource.input-limit", "complete source invocation exceeds resolved input policy before reading");
-              sourceInputMeters.set(id, iteration);
-              return maximum;
-            });
-          } finally {
-            scope.close();
-          }
-        },
-        async register(id, parent, chargeWork, maximumFuel = RETAINED_LUA_FUEL, segments = 1) {
-          if (closed || accounts.has(id) || retainedAccounts.has(id) || accounts.size >= 64) throw new Error("authored.vm.account-limit");
-          if (parent !== void 0 && !accounts.has(parent) && !retainedAccounts.has(parent)) throw new Error("authored.vm.account-revoked");
-          if (!Number.isSafeInteger(maximumFuel) || maximumFuel < 1 || maximumFuel > RETAINED_LUA_FUEL) throw new Error("authored.vm.invalid-fuel-partition");
-          if (!Number.isSafeInteger(segments) || segments < 1 || !Number.isSafeInteger(segments * maximumFuel) || parent !== void 0 && segments !== 1)
-            throw new Error("authored.vm.invalid-segment-plan");
-          accounts.set(id, parent === void 0 ? { consumed: 0, work: 0, maximumFuel, segments, segment: 0 } : accounts.get(parent) ?? retainedAccounts.get(parent));
-          if (chargeWork) workChargers.set(id, chargeWork);
-        },
-        async advanceSegment(id, index) {
-          const account = accounts.get(id);
-          if (closed || !account || endedTasks.has(id) || !Number.isSafeInteger(index) || index <= account.segment || index >= account.segments || account.consumed >= account.maximumFuel)
-            throw new Error("authored.vm.segment-revoked");
-          let references = 0;
-          for (const population2 of [accounts, retainedAccounts]) for (const other of population2.values()) {
-            const charge = workChargers.get(id);
-            if (charge) charge(1);
-            else if (++account.work > DEFAULT_RETAINED_EFFECT_WORK) throw luaResourceError("retained.work-exhausted", "segment alias check exhausted work");
-            if (other === account && ++references > 1) throw new Error("authored.vm.segment-revoked");
-          }
-          account.segment = index;
-          account.consumed = 0;
-          account.work = 0;
-        },
-        async startOperation(id, binding, args, types, destination, context) {
-          return invoke(id, () => {
-            const channelInput = handlerBindings.has(binding) && types.input?.kind === "bytes";
-            if (channelInput) {
-              const input2 = args.input.value;
-              activeNativeScratch()?.text(input2);
-              activeNativeScratch()?.reserve(8 + input2.length * 16);
-              activeNativeScratch()?.work(input2.length);
-            }
-            const octets = channelInput ? Array.from(atob(args.input.value), (c) => c.charCodeAt(0)) : void 0;
-            let relayOctets;
-            if (authorizationBindings.has(binding) && types.bytes?.kind === "bytes") {
-              const input2 = args.bytes.value;
-              const maximum = types.bytes.maximumLength ?? 256;
-              if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 65536 || input2.length > Math.ceil(maximum / 3) * 4)
-                throw new Error("authored.vm.byte-completion-limit");
-              activeNativeScratch()?.text(input2);
-              activeNativeScratch()?.reserve(8 + input2.length * 4);
-              activeNativeScratch()?.work(input2.length);
-              relayOctets = Uint8Array.from(atob(input2), (c) => c.charCodeAt(0));
-              if (relayOctets.length > maximum) throw new Error("authored.vm.byte-completion-limit");
-            }
-            if (octets && octets.length > 256) throw new Error("authored.vm.byte-completion-limit");
-            return {
-              action: "start",
-              id,
-              binding,
-              arguments: args,
-              value: null,
-              destination: destination ?? null,
-              ...octets ? { octets } : {},
-              ...relayOctets ? { relayOctets } : {},
-              ...context ? { context } : {}
-            };
-          }, types);
-        },
-        async dispatch(id, text2) {
-          return invoke(id, () => {
-            activeNativeScratch()?.text(text2);
-            const [action, , ...rest] = text2.split("|");
-            return { action, id, value: rest.join("|") };
-          });
-        },
-        async dispatchObservation(id, observation) {
-          return invoke(id, () => {
-            nativeValue(observation);
-            return { action: "resume", id, value: { ...observation } };
-          });
-        },
-        async dispatchBytes(id, input2) {
-          return invoke(id, () => {
-            const header = nativeEncode("resume|" + id + "|");
-            if (input2.length < header.length) throw new Error("authored.vm.invalid-byte-envelope");
-            for (let i = 0; i < header.length; i++) {
-              activeNativeScratch()?.work(1);
-              if (input2[i] !== header[i]) throw new Error("authored.vm.invalid-byte-envelope");
-            }
-            const length = input2.length - header.length;
-            if (length > 256) throw new Error("authored.vm.byte-completion-limit");
-            activeNativeScratch()?.reserve(16 + length);
-            activeNativeScratch()?.work(length);
-            return { action: "resume", id, value: null, rawOctets: input2.slice(header.length) };
-          });
-        },
-        async dispatchWaitBytes(id, prefix2, bytes2) {
-          if (typeof prefix2 !== "string" || prefix2 !== "receive:" && !/^message:[a-zA-Z0-9_-]{1,64}:$/u.test(prefix2))
-            throw new Error("authored.vm.invalid-wait-prefix");
-          if (!(bytes2 instanceof Uint8Array) || bytes2.length > 256) throw new Error("authored.vm.byte-completion-limit");
-          return invoke(id, () => {
-            activeNativeScratch()?.reserve(8 + bytes2.length * 17);
-            activeNativeScratch()?.work(bytes2.length * 2);
-            const octets = bytes2.slice();
-            return { action: "resume", id, value: null, waitPrefix: prefix2, octets: [...octets] };
-          });
-        },
-        async retire(id, retainAccount = false) {
-          let consumed = 0;
-          sourceInputMeters.delete(id);
-          const failure4 = failureScratch.get(id);
-          if (failure4) {
-            failure4.close();
-            hostScratch.delete(failure4);
-            failureScratch.delete(id);
-          }
-          if (retainedAccounts.has(id)) {
-            if (!retainAccount) retainedAccounts.delete(id);
-            return;
-          }
-          try {
-            if (!closed && accounts.has(id) && !endedTasks.has(id)) {
-              const result2 = invoke(id, { action: "retire", id, value: null });
-              consumed = result2.consumed;
-              result2.release();
-            }
-            if (!closed && retainAccount && accounts.has(id)) {
-              if (retainedAccounts.size >= 1024) throw new Error("authored.vm.retained-account-limit");
-              retainedAccounts.set(id, accounts.get(id));
-            }
-          } finally {
-            accounts.delete(id);
-            workChargers.delete(id);
-            endedTasks.delete(id);
-          }
-          return { consumed };
-        },
-        async close() {
-          close();
-        }
-      },
-      close
-    };
-  } catch (cause) {
-    close();
-    throw cause;
-  }
-}
-
-// ../../packages/contracts/src/units.ts
-var SEMANTIC_UNIT_IDENTIFIERS = Object.freeze([
-  "byte",
-  "centidegree-celsius",
-  "hertz",
-  "microsecond",
-  "millisecond",
-  "millivolt",
-  "tenth-hertz"
-]);
-
 // ../../packages/contracts/src/transfer.ts
 var TRANSFER_DIGEST_ALGORITHMS = Object.freeze(["sha256"]);
 function isTransferDigestAlgorithm(value) {
@@ -2501,6 +515,7 @@ var SOURCE_SET_ENTRY = "device.lua";
 var utf8Encoder = new TextEncoder();
 var fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 var LuaSourceSetVerificationError = class extends Error {
+  responsibility = "definition";
   diagnostic;
   constructor(diagnostic) {
     super(`${diagnostic.code} at ${diagnostic.path}: ${diagnostic.message}`);
@@ -2584,7 +599,7 @@ function prepareMembers(members) {
     }
     prepared.push(Object.freeze({ logicalName: member2.logicalName, logicalNameBytes, sourceBytes }));
   }
-  prepared.sort((left, right) => compareBytes2(left.logicalNameBytes, right.logicalNameBytes));
+  prepared.sort((left, right) => compareBytes(left.logicalNameBytes, right.logicalNameBytes));
   return Object.freeze(prepared);
 }
 function framePreparedLuaSourceSetIdentity(members) {
@@ -2632,7 +647,7 @@ function encodeScalarString(value, path) {
   }
   return utf8Encoder.encode(value);
 }
-function compareBytes2(left, right) {
+function compareBytes(left, right) {
   const commonLength = Math.min(left.byteLength, right.byteLength);
   for (let index = 0; index < commonLength; index += 1) {
     const difference = left[index] - right[index];
@@ -2673,6 +688,7 @@ var MAX_ZIP_COMMENT_FIELD_BYTES = 65535;
 var utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 var utf8Encoder2 = new TextEncoder();
 var PdpkgReadError = class extends Error {
+  responsibility = "definition";
   diagnostic;
   constructor(diagnostic, sourceMember) {
     super(`${diagnostic.code} at ${diagnostic.path}: ${diagnostic.message}`);
@@ -2846,7 +862,7 @@ function locateMemberData(view, member2, centralOffset) {
     path
   );
   enforceCompressionMethod(member2.method, path);
-  enforceLocalNameMismatch(!equalBytes2(member2.nameBytes, nameBytes), path);
+  enforceLocalNameMismatch(!equalBytes(member2.nameBytes, nameBytes), path);
   enforceLocalMethodMismatch(method !== member2.method, path);
   enforceLocalCrcMismatch(crc322 !== member2.crc32, path);
   enforceLocalCompressedSizeMismatch(compressedSize !== member2.compressedSize, path);
@@ -2891,9 +907,9 @@ function validateMemberName(name2, bytes, path) {
   }), path);
   enforceNameDirectory(name2.endsWith("/"), path);
   const segments = bytesSplit(bytes, 47);
-  enforceDotSegment(segments.some((segment) => equalBytes2(segment, Uint8Array.of(46))), path);
+  enforceDotSegment(segments.some((segment) => equalBytes(segment, Uint8Array.of(46))), path);
   enforceDotdotSegment(
-    segments.some((segment) => equalBytes2(segment, Uint8Array.of(46, 46))),
+    segments.some((segment) => equalBytes(segment, Uint8Array.of(46, 46))),
     path
   );
   enforceSegmentLength(segments.some((segment) => segment.byteLength > MAX_SEGMENT_BYTES), path);
@@ -3289,7 +1305,7 @@ function bytesSplit(bytes, separator) {
   }
   return result;
 }
-function equalBytes2(left, right) {
+function equalBytes(left, right) {
   return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 }
 function slice(view, offset, length) {
@@ -3332,6 +1348,2062 @@ function crc32(bytes) {
 }
 function failure2(code, path, message, sourceMember) {
   throw new PdpkgReadError(Object.freeze({ code, path, message }), sourceMember);
+}
+
+// ../../packages/core/src/clock.ts
+var RESOLUTION_SAMPLE_LIMIT = 1e5;
+var RESOLUTION_CHANGES_REQUIRED = 32;
+var MICROSECONDS_PER_MILLISECOND = 1e3;
+function requireFiniteNonNegative(value, name2) {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${name2} must be a finite, non-negative number`);
+  }
+  return value;
+}
+function nextSequence(current2) {
+  if (current2 >= Number.MAX_SAFE_INTEGER) {
+    throw new RangeError("clock sequence exhausted Number.MAX_SAFE_INTEGER");
+  }
+  return current2 + 1;
+}
+function measureResolutionUs(readMilliseconds) {
+  const originMs = readMilliseconds();
+  let previousMs = originMs;
+  let minimumUs = Number.POSITIVE_INFINITY;
+  let changes = 0;
+  for (let sample = 0; sample < RESOLUTION_SAMPLE_LIMIT && changes < RESOLUTION_CHANGES_REQUIRED; sample += 1) {
+    const currentMs = readMilliseconds();
+    const deltaUs = (currentMs - previousMs) * MICROSECONDS_PER_MILLISECOND;
+    if (deltaUs > 0) {
+      minimumUs = Math.min(minimumUs, deltaUs);
+      changes += 1;
+    }
+    previousMs = currentMs;
+  }
+  return {
+    originMs,
+    resolutionUs: Number.isFinite(minimumUs) ? Math.max(1, minimumUs) : 1
+  };
+}
+var CallbackDisposable = class {
+  #callback;
+  constructor(callback) {
+    this.#callback = callback;
+  }
+  dispose() {
+    const callback = this.#callback;
+    this.#callback = void 0;
+    callback?.();
+  }
+};
+var RealClock = class {
+  resolutionUs;
+  #originMs;
+  #sequence = 0;
+  constructor() {
+    const measured = measureResolutionUs(() => performance.now());
+    this.#originMs = measured.originMs;
+    this.resolutionUs = measured.resolutionUs;
+  }
+  monotonicUs() {
+    return (performance.now() - this.#originMs) * MICROSECONDS_PER_MILLISECOND;
+  }
+  wallClockUnixMs() {
+    return Date.now();
+  }
+  nextSequence() {
+    this.#sequence = nextSequence(this.#sequence);
+    return this.#sequence;
+  }
+  sleep(ms, signal) {
+    requireFiniteNonNegative(ms, "delay");
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason);
+    }
+    return new Promise((resolve, reject) => {
+      const handle = setTimeout(() => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      const abort = () => {
+        clearTimeout(handle);
+        signal?.removeEventListener("abort", abort);
+        reject(signal?.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+    });
+  }
+  timer(ms, fn) {
+    requireFiniteNonNegative(ms, "delay");
+    const handle = setTimeout(fn, ms);
+    return new CallbackDisposable(() => clearTimeout(handle));
+  }
+  interval(ms, fn) {
+    requireFiniteNonNegative(ms, "delay");
+    const handle = setInterval(fn, ms);
+    return new CallbackDisposable(() => clearInterval(handle));
+  }
+};
+
+// ../../packages/core/src/events.ts
+function requireNonNegativeSafeInteger(value, name2) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${name2} must be a non-negative safe integer`);
+  }
+  return value;
+}
+function overflowError(maximumLosslessQueueDepth) {
+  return {
+    code: "rpc.subscriber-overflow",
+    message: `subscriber exceeded ${maximumLosslessQueueDepth} pending lossless events`,
+    responsibility: "host",
+    retryability: "after-recovery",
+    details: { maximumLosslessQueueDepth }
+  };
+}
+function pendingEvent(event) {
+  if (event.kind === "operation-progress" || event.kind === "transfer-progress") {
+    return { event, coalescingKeys: [`operation:${event.operationId}`] };
+  }
+  if (event.kind === "state-cells") {
+    return {
+      event,
+      coalescingKeys: Object.keys(event.changed).map((name2) => `cell:${name2}`)
+    };
+  }
+  return { event };
+}
+var SessionEventDelivery = class {
+  #options;
+  #subscribers = /* @__PURE__ */ new Map();
+  #replay = [];
+  constructor(options) {
+    this.#options = {
+      ...options,
+      maximumLosslessQueueDepth: requireNonNegativeSafeInteger(
+        options.maximumLosslessQueueDepth,
+        "maximumLosslessQueueDepth"
+      ),
+      maximumReplayCount: requireNonNegativeSafeInteger(
+        options.maximumReplayCount,
+        "maximumReplayCount"
+      )
+    };
+  }
+  subscribe(subscriptionId, listener, options = {}) {
+    if (this.#subscribers.has(subscriptionId)) {
+      throw new Error(`subscription ${subscriptionId} already exists`);
+    }
+    const replayLast = requireNonNegativeSafeInteger(options.replayLast ?? 0, "replayLast");
+    if (replayLast > this.#options.maximumReplayCount) {
+      throw new RangeError(
+        `replayLast ${replayLast} exceeds maximumReplayCount ${this.#options.maximumReplayCount}`
+      );
+    }
+    const subscriber = {
+      id: subscriptionId,
+      listener,
+      queue: [],
+      coalesced: /* @__PURE__ */ new Map(),
+      pendingLossless: 0,
+      delivering: false,
+      terminated: false
+    };
+    this.#subscribers.set(subscriptionId, subscriber);
+    for (const event of this.#replay.slice(-replayLast)) this.#enqueue(subscriber, event);
+    return { dispose: () => this.unsubscribe(subscriptionId) };
+  }
+  unsubscribe(subscriptionId) {
+    const subscriber = this.#subscribers.get(subscriptionId);
+    if (subscriber === void 0) return;
+    this.#discard(subscriber);
+    this.#subscribers.delete(subscriptionId);
+  }
+  clear() {
+    for (const subscriber of this.#subscribers.values()) this.#discard(subscriber);
+    this.#subscribers.clear();
+  }
+  /** Records one session event for replay and offers it to every subscriber. */
+  publish(event) {
+    this.#remember(event);
+    for (const subscriber of [...this.#subscribers.values()]) this.#enqueue(subscriber, event);
+  }
+  /** Delivers an already-addressed RPC event without adding it to replay. */
+  publishTo(subscriptionId, event) {
+    const subscriber = this.#subscribers.get(subscriptionId);
+    if (subscriber !== void 0) this.#enqueue(subscriber, event);
+  }
+  terminate(subscriptionId, reason) {
+    const subscriber = this.#subscribers.get(subscriptionId);
+    if (subscriber !== void 0) this.#terminate(subscriber, reason);
+  }
+  queueState(subscriptionId) {
+    const subscriber = this.#subscribers.get(subscriptionId);
+    if (subscriber === void 0) return void 0;
+    return {
+      pendingLosslessEvents: subscriber.pendingLossless,
+      pendingCoalescedEvents: subscriber.coalesced.size,
+      delivering: subscriber.delivering
+    };
+  }
+  #remember(event) {
+    if (this.#options.maximumReplayCount === 0) return;
+    this.#replay.push(event);
+    if (this.#replay.length > this.#options.maximumReplayCount) this.#replay.shift();
+  }
+  #enqueue(subscriber, event) {
+    if (subscriber.terminated) return;
+    const pending = pendingEvent(event);
+    if (pending.coalescingKeys === void 0 || pending.coalescingKeys.length === 0) {
+      if (subscriber.pendingLossless >= this.#options.maximumLosslessQueueDepth) {
+        this.#terminate(subscriber, overflowError(this.#options.maximumLosslessQueueDepth));
+        return;
+      }
+      subscriber.pendingLossless += 1;
+    } else {
+      for (const key of pending.coalescingKeys) {
+        const replaced = subscriber.coalesced.get(key);
+        if (replaced !== void 0) this.#removeKey(subscriber, replaced, key);
+        subscriber.coalesced.set(key, pending);
+      }
+    }
+    subscriber.queue.push(pending);
+    this.#schedule(subscriber);
+  }
+  #removeKey(subscriber, pending, key) {
+    subscriber.coalesced.delete(key);
+    const keys2 = pending.coalescingKeys;
+    const keyIndex = keys2.indexOf(key);
+    if (keyIndex >= 0) keys2.splice(keyIndex, 1);
+    if (pending.event.kind === "state-cells" && key.startsWith("cell:")) {
+      const name2 = key.slice("cell:".length);
+      const changed = { ...pending.event.changed };
+      delete changed[name2];
+      pending.event = { ...pending.event, changed };
+    }
+    if (keys2.length === 0) {
+      const queueIndex = subscriber.queue.indexOf(pending);
+      if (queueIndex >= 0) subscriber.queue.splice(queueIndex, 1);
+    }
+  }
+  #schedule(subscriber) {
+    if (subscriber.delivering || subscriber.terminated) return;
+    subscriber.delivering = true;
+    queueMicrotask(() => void this.#drain(subscriber));
+  }
+  async #drain(subscriber) {
+    while (!subscriber.terminated) {
+      const pending = subscriber.queue.shift();
+      if (pending === void 0) break;
+      if (pending.coalescingKeys === void 0 || pending.coalescingKeys.length === 0) {
+        subscriber.pendingLossless -= 1;
+      } else {
+        for (const key of pending.coalescingKeys) {
+          if (subscriber.coalesced.get(key) === pending) subscriber.coalesced.delete(key);
+        }
+      }
+      try {
+        await subscriber.listener(pending.event);
+      } catch (cause) {
+        try {
+          if (this.#options.onListenerError === void 0) {
+            console.error(`session event listener ${subscriber.id} failed`, cause);
+          } else {
+            this.#options.onListenerError(subscriber.id, cause);
+          }
+        } catch {
+        }
+        await Promise.resolve();
+      }
+    }
+    subscriber.delivering = false;
+    if (!subscriber.terminated && subscriber.queue.length > 0) this.#schedule(subscriber);
+  }
+  #terminate(subscriber, reason) {
+    if (subscriber.terminated) return;
+    subscriber.terminated = true;
+    this.#discard(subscriber);
+    this.#subscribers.delete(subscriber.id);
+    queueMicrotask(() => {
+      try {
+        this.#options.onSubscriberTerminated?.(subscriber.id, reason);
+      } catch {
+      }
+    });
+  }
+  #discard(subscriber) {
+    subscriber.terminated = true;
+    subscriber.queue.length = 0;
+    subscriber.coalesced.clear();
+    subscriber.pendingLossless = 0;
+  }
+};
+
+// ../../packages/core/src/rpc.ts
+function explicitBoundaryError(cause) {
+  if (typeof cause !== "object" || cause === null) return void 0;
+  const wrapper = cause;
+  for (const member2 of [wrapper.error, wrapper.diagnostic, wrapper.causeDiagnostic]) {
+    if (typeof member2 !== "object" || member2 === null) continue;
+    const value = member2;
+    if (typeof value.code !== "string" || typeof value.message !== "string") continue;
+    const retryability = value.retryability === "no" || value.retryability === "after-reconnect" || value.retryability === "after-recovery" || value.retryability === "unknown" ? value.retryability : "no";
+    const responsibility = isPdrFailureResponsibility(value.responsibility) ? value.responsibility : isPdrFailureResponsibility(wrapper.responsibility) ? wrapper.responsibility : void 0;
+    return {
+      code: value.code,
+      message: value.message,
+      retryability,
+      ...responsibility === void 0 ? {} : { responsibility },
+      ...value.details === void 0 ? {} : { details: value.details },
+      ...value.platformCause === void 0 ? {} : { platformCause: value.platformCause }
+    };
+  }
+  return void 0;
+}
+function isResponse(message) {
+  return message.kind === "ok" || message.kind === "error";
+}
+function isEvent(message) {
+  return message.kind === "event" || message.kind === "diagnostics" || message.kind === "client-evicted" || message.kind === "subscriber-evicted";
+}
+function serveSessionRpc(endpoint, server) {
+  let closed = false;
+  const onMessage = ({ data }) => {
+    if (closed || isResponse(data) || isEvent(data)) return;
+    void server.handle(data).then(
+      (response) => {
+        if (!closed) endpoint.postMessage(response);
+      },
+      (cause) => {
+        if (closed) return;
+        const error = explicitBoundaryError(cause) ?? {
+          code: "rpc.handler-failed",
+          message: cause instanceof Error ? cause.message : String(cause),
+          retryability: "unknown"
+        };
+        endpoint.postMessage({
+          kind: "error",
+          method: data.kind,
+          callId: data.callId,
+          error
+        });
+      }
+    );
+  };
+  endpoint.addEventListener("message", onMessage);
+  endpoint.start?.();
+  void (async () => {
+    for await (const event of server.events) {
+      if (closed) return;
+      endpoint.postMessage(event);
+    }
+  })();
+  return {
+    dispose() {
+      if (closed) return;
+      closed = true;
+      endpoint.removeEventListener("message", onMessage);
+      endpoint.close?.();
+    }
+  };
+}
+
+// ../../packages/control-model/src/authored.ts
+function generateAuthoredResultControl(type2, label) {
+  const declaration = structuredClone(type2);
+  const children = (fields2) => Object.freeze(Object.fromEntries(
+    Object.keys(fields2).sort().map((name2) => [name2, generateAuthoredResultControl(fields2[name2], type2.fieldLabels?.[name2])])
+  ));
+  if (type2.kind === "record") return Object.freeze({ declaration, ...label === void 0 ? {} : { label }, kind: "record", fields: children(type2.fields) });
+  if (type2.kind === "array") return Object.freeze({ declaration, ...label === void 0 ? {} : { label }, kind: "array", item: generateAuthoredResultControl(type2.item) });
+  if (type2.kind === "variant") return Object.freeze({ declaration, ...label === void 0 ? {} : { label }, kind: "variant", variants: children(type2.variants) });
+  const value = type2.kind === "bytes" ? { kind: "bytes" } : type2.kind === "enum" || type2.kind === "flags" ? { kind: type2.kind === "enum" ? "member" : "flags", members: type2.members.map((name2) => ({ name: name2 })) } : { kind: "scalar", unit: type2.unit ?? null };
+  return Object.freeze({ declaration, ...label === void 0 ? {} : { label }, kind: "leaf", value });
+}
+function generateAuthoredControlModel(description) {
+  return Object.freeze({
+    apiVersion: description.apiVersion,
+    id: description.id,
+    ...description.displayName === void 0 ? {} : { displayName: description.displayName },
+    ...description.description === void 0 ? {} : { description: description.description },
+    ...description.modePresentation === void 0 ? {} : { modePresentation: description.modePresentation },
+    modes: description.modes,
+    profiles: description.profiles,
+    state: Object.fromEntries(Object.entries(description.state ?? {}).map(([id, cell]) => [id, { ...cell, valueControl: generateAuthoredResultControl(cell.type) }])),
+    operations: description.operations.map((operation) => Object.freeze({
+      ...operation,
+      argumentControls: Object.fromEntries(Object.entries(operation.arguments).map(([name2, type2]) => [
+        name2,
+        type2.kind === "byte-source" || type2.kind === "stream-source" ? {
+          kind: "file",
+          minimumBytes: type2.minimumBytes,
+          maximumBytes: type2.maximumBytes,
+          ...type2.label === void 0 ? {} : { label: type2.label },
+          ...type2.description === void 0 ? {} : { description: type2.description }
+        } : { kind: "value", type: type2, ...type2.label === void 0 ? {} : { label: type2.label }, ...type2.description === void 0 ? {} : { description: type2.description } }
+      ])),
+      resultControl: operation.result.kind === "value" ? generateAuthoredResultControl(operation.result.type) : null
+    }))
+  });
+}
+
+// ../../packages/lua-vm/src/resource-policy.ts
+var LUA_RESOURCE_POLICY_DEFAULTS = Object.freeze({
+  maximumEncodedInputBytes: 1048576,
+  maximumEncodedOutputBytes: 1048576,
+  maximumVmAllocationBytes: 16777216
+});
+var LUA_RESOURCE_POLICY_MAXIMA = Object.freeze({
+  maximumEncodedInputBytes: 4194304,
+  maximumEncodedOutputBytes: 4194304,
+  maximumVmAllocationBytes: 67108864
+});
+var LuaResourceError = class extends Error {
+  constructor(code, detail, fuelConsumed) {
+    super(detail.startsWith(`${code}:`) ? detail : `${code}: ${detail}`);
+    this.name = "LuaResourceError";
+    Object.defineProperty(this, "code", { value: code, enumerable: true });
+    if (fuelConsumed !== void 0) {
+      Object.defineProperty(this, "fuelConsumed", { value: fuelConsumed, enumerable: true });
+    }
+  }
+};
+function resolveLuaResourcePolicy(request2 = {}) {
+  return Object.freeze({
+    maximumEncodedInputBytes: member("maximumEncodedInputBytes", request2),
+    maximumEncodedOutputBytes: member("maximumEncodedOutputBytes", request2),
+    maximumVmAllocationBytes: member("maximumVmAllocationBytes", request2)
+  });
+}
+function luaResourceError(code, detail, fuelConsumed) {
+  return new LuaResourceError(code, detail, fuelConsumed);
+}
+function member(name2, request2) {
+  const value = request2[name2] ?? LUA_RESOURCE_POLICY_DEFAULTS[name2];
+  if (!Number.isSafeInteger(value) || value <= 0 || value > LUA_RESOURCE_POLICY_MAXIMA[name2]) {
+    throw luaResourceError(
+      "lua-vm.resource.policy-limit",
+      `${name2} must be a positive integer no greater than ${LUA_RESOURCE_POLICY_MAXIMA[name2]}; observed ${value}`
+    );
+  }
+  return value;
+}
+
+// ../../packages/lua-vm/src/native-account.ts
+var StandaloneNativeData = class {
+  #resident = 8;
+  #serial = 0;
+  reserve(capacity, usedLength = capacity) {
+    if (!Number.isSafeInteger(capacity) || capacity < 0 || !Number.isSafeInteger(usedLength) || usedLength < 0 || usedLength > capacity) throw new RangeError("invalid native reservation");
+    const bytes = capacity + 84;
+    if (!Number.isSafeInteger(++this.#serial) || bytes > 16 * 1024 * 1024 - this.#resident)
+      throw luaResourceError("retained.helper-data-exhausted", "native data exhausted before allocation");
+    this.#resident += bytes;
+    let live = true;
+    return { release: () => {
+      if (live) {
+        live = false;
+        this.#resident -= bytes;
+      }
+    } };
+  }
+};
+var NativeScratch = class _NativeScratch {
+  #data;
+  #charge;
+  #held = [];
+  owner;
+  constructor(data, charge, owner) {
+    this.#data = data;
+    this.#charge = charge;
+    this.owner = owner;
+  }
+  get dataAccount() {
+    return this.#data;
+  }
+  iteration = () => {
+    this.#charge(1);
+  };
+  work(units) {
+    if (!Number.isSafeInteger(units) || units < 0) throw new RangeError("invalid native work charge");
+    if (units === 0) return;
+    this.#charge(units);
+  }
+  reserve(capacity) {
+    this.#held.push(this.#data.reserve(capacity));
+  }
+  /** A component may release its own intermediates at last use. The parent
+   * remains a refusal/unwind backstop if construction never reaches finish. */
+  child() {
+    this.reserve(128);
+    const child = new _NativeScratch(this.#data, this.#charge, this.owner);
+    this.#held.push({ release: () => child.close() });
+    return child;
+  }
+  /** Reserve append storage before its allocation, not after a size walk.
+   * Canonical structural convention: container 8, scalar/entry 8+payload. */
+  node(bytes = 8) {
+    this.iteration();
+    this.reserve(bytes);
+  }
+  text(value) {
+    this.reserve(8 + value.length * 3);
+    this.work(1 + Math.ceil(value.length / 256));
+  }
+  /** A size walk borrows engine temporaries; it does not transfer their
+   * lifetime to the value being sized. Keep the same work/data accounts. */
+  transient(run) {
+    const scratch = new _NativeScratch(this.#data, this.#charge, this.owner);
+    try {
+      return withNativeScratch(scratch, () => run(scratch));
+    } finally {
+      scratch.close();
+    }
+  }
+  close() {
+    for (const held of this.#held) held.release();
+    this.#held.length = 0;
+  }
+};
+var current;
+function activeNativeScratch() {
+  return current;
+}
+function withNativeScratch(scratch, run) {
+  const previous = current;
+  current = scratch;
+  try {
+    const result = run();
+    if (result && typeof result === "object" && "then" in result)
+      throw new Error("native accounting scope cannot cross an asynchronous boundary");
+    return result;
+  } finally {
+    current = previous;
+  }
+}
+function population(value) {
+  let count = 0;
+  for (const key in value) {
+    current?.iteration();
+    if (Object.hasOwn(value, key)) count++;
+  }
+  return count;
+}
+function nativeKeys(value) {
+  const count = current ? population(value) : 0;
+  current?.work(count);
+  current?.reserve(8 + count * 16);
+  return Object.keys(value);
+}
+function nativeEntries(value) {
+  const count = current ? population(value) : 0;
+  current?.work(count);
+  current?.reserve(8 + count * 56);
+  return Object.entries(value);
+}
+function nativeValues(value) {
+  const count = current ? population(value) : 0;
+  current?.work(count);
+  current?.reserve(8 + count * 16);
+  return Object.values(value);
+}
+function nativeRecord(entries) {
+  current?.reserve(8);
+  function* accounted() {
+    for (const entry of entries) {
+      current?.iteration();
+      current?.reserve(16 + (typeof entry[0] === "string" ? entry[0].length * 3 : 8));
+      yield entry;
+    }
+  }
+  return Object.fromEntries(accounted());
+}
+function nativeArray(value) {
+  if (!current || value === void 0) return value;
+  const scope = current;
+  scope.reserve(88);
+  return new Proxy(value, {
+    get(target, key) {
+      const method = Reflect.get(target, key, target);
+      if (typeof method !== "function") return method;
+      if (!["map", "filter", "flatMap", "reduce", "forEach", "some", "every", "find", "findIndex"].includes(String(key)))
+        return method.bind(target);
+      return (callback, ...rest) => {
+        if (key === "map" || key === "filter") scope.reserve(8 + target.length * 16);
+        if (key === "flatMap") scope.reserve(8);
+        return method.call(target, function(...args) {
+          scope.iteration();
+          const result = callback.apply(this, args);
+          if (key === "flatMap") {
+            const length = Array.isArray(result) ? result.length : 1;
+            scope.reserve(length * 16);
+            scope.work(1 + Math.ceil(length / 256));
+          }
+          return result;
+        }, ...rest);
+      };
+    }
+  });
+}
+function nativeSort(value, compare) {
+  current?.reserve(8 + value.length * 16);
+  value.sort((a, b) => {
+    current?.iteration();
+    if (typeof a === "string") current?.work(1 + Math.ceil(a.length / 256));
+    if (typeof b === "string") current?.work(1 + Math.ceil(b.length / 256));
+    if (compare) return compare(a, b);
+    const left = String(a), right = String(b);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  return value;
+}
+function nativeValue(value) {
+  if (!current) return value;
+  const seen = /* @__PURE__ */ new Set();
+  current.reserve(8);
+  const visit = (v) => {
+    current.node(24);
+    if (typeof v === "string") {
+      current.text(v);
+      return;
+    }
+    if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) {
+      current.reserve(8 + v.byteLength);
+      current.work(1 + Math.ceil(v.byteLength / 256));
+      return;
+    }
+    if (!v || typeof v !== "object") return;
+    if (seen.has(v)) throw new TypeError("native structural copy does not accept cycles");
+    seen.add(v);
+    try {
+      if (v instanceof Map) {
+        for (const [key, item2] of v) {
+          visit(key);
+          visit(item2);
+        }
+      } else if (v instanceof Set) {
+        for (const item2 of v) visit(item2);
+      } else if (Array.isArray(v)) for (const item2 of nativeArray(v)) visit(item2);
+      else for (const [key, item2] of nativeEntries(v)) {
+        current.text(key);
+        visit(item2);
+      }
+    } finally {
+      seen.delete(v);
+    }
+  };
+  visit(value);
+  return value;
+}
+function nativeJson(value) {
+  if (!current) return JSON.stringify(value);
+  let capacity = 8;
+  const seen = /* @__PURE__ */ new Set();
+  current.reserve(8);
+  const visit = (v) => {
+    current.iteration();
+    if (typeof v === "string") {
+      capacity += 2 + v.length * 6;
+      return;
+    }
+    capacity += 32;
+    if (!v || typeof v !== "object") return;
+    if (seen.has(v)) throw new TypeError("native JSON does not accept cycles");
+    seen.add(v);
+    try {
+      if (Array.isArray(v)) for (const item2 of nativeArray(v)) visit(item2);
+      else for (const [key, item2] of nativeEntries(v)) {
+        visit(key);
+        visit(item2);
+      }
+    } finally {
+      seen.delete(v);
+    }
+  };
+  visit(value);
+  current.reserve(capacity);
+  current.work(1 + Math.ceil(capacity / 256));
+  return JSON.stringify(value);
+}
+function nativeEncode(value) {
+  if (value !== void 0) current?.text(value);
+  return new TextEncoder().encode(value);
+}
+
+// ../../packages/lua-vm/src/environment-failure.ts
+function environmentFailure(code) {
+  const names2 = /* @__PURE__ */ new Map([
+    [-1, "malformed"],
+    [-2, "capacity"],
+    [-3, "non-finite"],
+    [-4, "negative-zero"],
+    [-5, "forbidden-crossing"],
+    [-6, "source"],
+    [-7, "program"],
+    [-8, "invalid-text"],
+    [-10, "missing-value"],
+    [-11, "array-shape"],
+    [-12, "record-key"],
+    [-13, "cycle"],
+    [-14, "boundary-object"],
+    [-15, "require-missing"],
+    [-16, "require-initialization-cycle"],
+    [-19, "admission-exports"],
+    [-20, "invocation-export"],
+    [-21, "pointer-rendering"],
+    [-22, "integer-decimal"],
+    [-23, "integer-range"],
+    [-24, "variant-tag"],
+    [-25, "variant-value"]
+  ]);
+  const name2 = `lua-vm.environment.${names2.get(code) ?? `failure-${code}`}`;
+  const error = new Error(`${name2}: closed Lua execution failed`);
+  Object.defineProperty(error, "code", { value: name2, enumerable: true });
+  return error;
+}
+
+// ../../packages/lua-vm/src/value-abi.ts
+function sourceMemberAdmissionError(member2, reason) {
+  const code = "lua-vm.admission.source-member", message = `${member2} ${reason}`;
+  const error = new Error(`${code}: ${message}`);
+  const boundary = {
+    code,
+    message,
+    responsibility: "definition",
+    retryability: "no",
+    details: { sourceMember: member2, sourceMemberFailure: reason }
+  };
+  Object.defineProperties(error, {
+    code: { value: code, enumerable: true },
+    error: { value: boundary },
+    sourceMember: { value: member2, enumerable: true },
+    sourceMemberFailure: { value: reason, enumerable: true },
+    phase: { value: "admission", enumerable: true }
+  });
+  return error;
+}
+function requireLuaAdmissionResult(frame) {
+  if (frame !== null && typeof frame === "object") {
+    const decoded2 = frame;
+    if (decoded2.envelopeKind === "program-failure") throw programFailureError(decoded2.semantic, "admission");
+    if (decoded2.envelopeKind === "source-member-failure") {
+      const semantic2 = decoded2.semantic;
+      throw sourceMemberAdmissionError(String(semantic2.member), semantic2.reason);
+    }
+  }
+  if (frame === null || typeof frame !== "object" || frame.envelopeKind !== "admission-result") {
+    fail("admission-envelope", "admission worker did not return an admission-result envelope");
+  }
+  const decoded = frame;
+  if (decoded.semantic === null || typeof decoded.semantic !== "object" || decoded.semantic.kind !== "admission-result") {
+    fail("admission-envelope", "admission worker did not return an admission-result envelope");
+  }
+  const semantic = decoded.semantic;
+  if (!Array.isArray(semantic.exportsInCanonicalOrder) || nativeArray(semantic.exportsInCanonicalOrder).some((name2) => typeof name2 !== "string")) {
+    fail("admission-envelope", "admission worker returned malformed export names");
+  }
+  return Object.freeze({
+    graph: semantic.graph,
+    exportsInCanonicalOrder: Object.freeze([...semantic.exportsInCanonicalOrder])
+  });
+}
+function encodeLuaProgramInvocation(exportName, input, iteration = activeNativeScratch()?.iteration) {
+  return encodeLuaValueAbiFrame("invoke", { kind: "invoke", exportName, input }, iteration);
+}
+function encodeLuaProgramInvocationInto(exportName, input, target, iteration) {
+  const writer = new ByteWriter(iteration, target);
+  writer.bytes(Uint8Array.of(80, 68, 82, 86, 1, envelopeKinds.get("invoke")));
+  writer.region((content) => {
+    const name2 = encodeName(exportName, "invoke.exportName");
+    content.u32(name2.length).bytes(name2);
+    encodeValue(input, content, "invoke.input");
+  });
+  return writer.finish().length;
+}
+function requireLuaProgramInvocationOutcome(frame) {
+  if (frame === null || typeof frame !== "object") fail("invocation-envelope", "invocation returned no value envelope");
+  const decoded = frame;
+  if (decoded.envelopeKind === "program-failure") throw programFailureError(decoded.semantic, "invocation");
+  if (decoded.envelopeKind !== "value") {
+    fail("invocation-envelope", "invocation did not return a value envelope");
+  }
+  const kind = decodedRootKind(decoded.semantic);
+  return Object.freeze({ kind, value: materializeInvocationValue(decoded.semantic, "invocation.output") });
+}
+function programFailureError(semanticValue, phase) {
+  const semantic = semanticValue;
+  const error = new Error(`lua-vm.${phase}.program-failure: ${String(semantic.name)}`);
+  Object.defineProperties(error, {
+    code: { value: `lua-vm.${phase}.program-failure`, enumerable: true },
+    programFailureName: { value: semantic.name, enumerable: true },
+    programFailureDetails: { value: semantic.details, enumerable: true },
+    ...phase === "admission" ? { phase: { value: phase, enumerable: true } } : {}
+  });
+  return error;
+}
+function decodedRootKind(value) {
+  if (value === false) return "false";
+  if (value === true) return "true";
+  if (value === null) return "null";
+  if (!isValueNode(value)) fail("invocation-envelope", "invocation value has no ABI root kind");
+  switch (value.kind) {
+    case "boolean":
+      return value.value === false ? "false" : "true";
+    case "i64":
+      return "signed-bounded-integer";
+    case "u64":
+      return "unsigned-bounded-integer";
+    case "integer":
+      return "arbitrary-integer";
+    case "float64":
+      return "finite-float";
+    case "text":
+      return "text";
+    case "bytes":
+      return "bytes";
+    case "array":
+      return "array";
+    case "record":
+      return "record";
+    case "variant":
+      return "tagged-variant";
+    case "null":
+      return "null";
+    default:
+      fail("invocation-envelope", `invocation value has unknown ABI root kind ${value.kind}`);
+  }
+}
+function materializeInvocationValue(value, at) {
+  activeNativeScratch()?.node();
+  if (value === null || typeof value === "boolean") return value;
+  if (!isValueNode(value)) fail("invocation-envelope", `${at} is not a decoded ABI value`);
+  if (value.kind === "boolean") {
+    if (typeof value.value !== "boolean") fail("invocation-envelope", `${at}.value is not Boolean`);
+    return value.value;
+  }
+  if (value.kind === "i64" || value.kind === "u64" || value.kind === "integer") {
+    return Object.freeze({ kind: value.kind, decimal: requireString(value.decimal, `${at}.decimal`) });
+  }
+  if (value.kind === "float64") return Number(requireString(value.decimal, `${at}.decimal`));
+  if (value.kind === "text") return requireString(value.value, `${at}.value`);
+  if (value.kind === "bytes") return decodeHex(requireString(value.hex, `${at}.hex`), at);
+  if (value.kind === "null") return null;
+  if (value.kind === "array") {
+    return Object.freeze(nativeArray(requireArray(value.items, `${at}.items`)).map(
+      (item2, index) => materializeInvocationValue(item2, `${at}[${index}]`)
+    ));
+  }
+  if (value.kind === "record") {
+    const entries = requireArray(value.entriesInCanonicalOrder, `${at}.entriesInCanonicalOrder`);
+    return Object.freeze(nativeRecord(nativeArray(entries).map((entry, index) => {
+      if (!Array.isArray(entry) || entry.length !== 2) fail("invocation-envelope", `${at}.entries[${index}] is not a pair`);
+      return [requireString(entry[0], `${at}.entries[${index}].name`), materializeInvocationValue(entry[1], `${at}.${String(entry[0])}`)];
+    })));
+  }
+  if (value.kind === "variant") {
+    return Object.freeze({
+      kind: "variant",
+      tag: requireString(value.tag, `${at}.tag`),
+      value: materializeInvocationValue(value.value, `${at}.value`)
+    });
+  }
+  fail("invocation-envelope", `${at} has unknown decoded ABI kind ${value.kind}`);
+}
+var encoder2 = new TextEncoder();
+var decoder = new TextDecoder("utf-8", { fatal: true });
+var envelopeKinds = /* @__PURE__ */ new Map([
+  ["value", 1],
+  ["admission-result", 2],
+  ["invoke", 3],
+  ["program-failure", 4]
+]);
+var envelopeNames = new Map([
+  ...nativeArray([...envelopeKinds]).map(([name2, tag]) => [tag, name2]),
+  [5, "source-member-failure"]
+]);
+var MAXIMUM_LUA_VALUE_ABI_DEPTH = 128;
+function assertValueDepth(depth) {
+  if (depth > MAXIMUM_LUA_VALUE_ABI_DEPTH) {
+    throw luaResourceError(
+      "lua-vm.resource.depth-limit",
+      `ABI value exceeds ${MAXIMUM_LUA_VALUE_ABI_DEPTH} nested levels`
+    );
+  }
+}
+function encodeLuaValueAbiFrame(envelopeKind, semanticValue, iteration) {
+  const kind = envelopeKinds.get(envelopeKind);
+  if (kind === void 0) throw new Error(`lua-vm.value-abi.envelope-kind: ${String(envelopeKind)}`);
+  const payload = new ByteWriter(iteration);
+  if (envelopeKind === "value") {
+    encodeValue(semanticValue, payload, "value");
+  } else if (envelopeKind === "admission-result") {
+    const semantic = requireRecord(semanticValue, `envelope.${envelopeKind}`);
+    if (semantic.kind !== "admission-result") fail("shape", "admission result has the wrong semantic kind");
+    encodeValue(semantic.graph, payload, "admission.graph");
+    const exports = requireArray(semantic.exportsInCanonicalOrder, "admission.exportsInCanonicalOrder");
+    payload.u32(exports.length);
+    let prior;
+    for (const [index, nameValue] of exports.entries()) {
+      const name2 = encodeName(nameValue, `admission.exports[${index}]`);
+      if (prior !== void 0 && compareBytes2(prior, name2) >= 0) fail("canonical-order", "export names are not strictly ordered");
+      payload.u32(name2.byteLength).bytes(name2);
+      prior = name2;
+    }
+  } else if (envelopeKind === "invoke") {
+    const semantic = requireRecord(semanticValue, `envelope.${envelopeKind}`);
+    if (semantic.kind !== "invoke") fail("shape", "invocation has the wrong semantic kind");
+    const name2 = encodeName(semantic.exportName, "invoke.exportName");
+    payload.u32(name2.byteLength).bytes(name2);
+    encodeValue(semantic.input, payload, "invoke.input");
+  } else {
+    const semantic = requireRecord(semanticValue, `envelope.${envelopeKind}`);
+    if (semantic.kind !== "program-failure") fail("shape", "program failure has the wrong semantic kind");
+    const name2 = encodeName(semantic.name, "program-failure.name");
+    payload.u32(name2.byteLength).bytes(name2);
+    encodeValue(semantic.details, payload, "program-failure.details");
+  }
+  const body = payload.finish();
+  return new ByteWriter(iteration).bytes(Uint8Array.of(80, 68, 82, 86, 1, kind)).u32(body.byteLength).bytes(body).finish();
+}
+function decodeLuaValueAbiFrame(frame) {
+  const reader = new ByteReader(frame);
+  if (!equalBytes2(reader.bytes(4), Uint8Array.of(80, 68, 82, 86)) || reader.u8() !== 1) {
+    fail("frame-malformed", "wrong magic or version");
+  }
+  const kind = reader.u8();
+  const envelopeKind = envelopeNames.get(kind);
+  if (envelopeKind === void 0) fail("frame-malformed", `unknown envelope kind ${kind}`);
+  const length = reader.u32();
+  if (length !== reader.remaining) fail("frame-malformed", `payload declares ${length}, observed ${reader.remaining}`);
+  let semantic;
+  if (envelopeKind === "value") {
+    const value = decodeValue(reader, "value");
+    semantic = value.kind === "null" ? null : value;
+  } else if (envelopeKind === "admission-result") {
+    const graph = materialize(decodeValue(reader, "admission.graph"));
+    if (graph === null || typeof graph !== "object" || Array.isArray(graph)) fail("frame-malformed", "admission graph is not a record");
+    const count = reader.u32();
+    const exportsInCanonicalOrder = [];
+    let prior;
+    for (let index = 0; index < count; index += 1) {
+      const raw = reader.bytes(reader.u32());
+      const name2 = decodeName(raw, `admission.exports[${index}]`);
+      if (prior !== void 0 && compareBytes2(prior, raw) >= 0) fail("frame-malformed", "export names are not canonical");
+      exportsInCanonicalOrder.push(name2);
+      prior = raw;
+    }
+    semantic = { kind: "admission-result", graph, exportsInCanonicalOrder };
+  } else if (envelopeKind === "invoke") {
+    const exportName = decodeName(reader.bytes(reader.u32()), "invoke.exportName");
+    semantic = { kind: "invoke", exportName, input: materialize(decodeValue(reader, "invoke.input")) };
+  } else if (envelopeKind === "program-failure") {
+    const name2 = decodeName(reader.bytes(reader.u32()), "program-failure.name");
+    semantic = { kind: "program-failure", name: name2, details: materialize(decodeValue(reader, "program-failure.details")) };
+  } else {
+    const member2 = decodeName(reader.bytes(reader.u32()), "source-member-failure.member");
+    const reasonTag = reader.u8();
+    const reason = reasonTag === 1 ? "missing" : reasonTag === 2 ? "initialization-failed" : void 0;
+    if (reason === void 0) fail("frame-malformed", `unknown source-member failure class ${reasonTag}`);
+    semantic = { kind: "source-member-failure", member: member2, reason };
+  }
+  if (reader.remaining !== 0) fail("frame-malformed", `${reader.remaining} trailing octets`);
+  return Object.freeze({ envelopeKind, semantic });
+}
+function encodeValue(value, writer, at, depth = 0) {
+  assertValueDepth(depth);
+  writer.iteration?.();
+  if (value === null) {
+    writer.u8(12).u32(0);
+    return;
+  }
+  if (typeof value === "boolean") {
+    writer.u8(value ? 2 : 1).u32(0);
+    return;
+  }
+  const node = requireRecord(value, at);
+  if (node.kind === "boolean") {
+    if (typeof node.value !== "boolean") fail("shape", `${at}.value must be boolean`);
+    writer.u8(node.value ? 2 : 1).u32(0);
+    return;
+  }
+  if (node.kind === "i64" || node.kind === "u64") {
+    const signed = node.kind === "i64";
+    const integer2 = parseDecimal(node.decimal, at);
+    const minimum = signed ? -(1n << 63n) : 0n;
+    const maximum = signed ? (1n << 63n) - 1n : (1n << 64n) - 1n;
+    if (integer2 < minimum || integer2 > maximum) fail("integer-range", `${at} is outside ${node.kind}`);
+    const unsigned2 = integer2 < 0 ? integer2 + (1n << 64n) : integer2;
+    const content = bigEndian(unsigned2, 8);
+    writer.u8(signed ? 3 : 4).u32(8).bytes(content);
+    return;
+  }
+  if (node.kind === "integer") {
+    const integer2 = parseDecimal(node.decimal, at);
+    const negative = integer2 < 0;
+    let magnitude = negative ? -integer2 : integer2;
+    const octets = [];
+    while (magnitude !== 0n) {
+      activeNativeScratch()?.work(1 + octets.length);
+      activeNativeScratch()?.reserve(16);
+      octets.unshift(Number(magnitude & 0xffn));
+      magnitude >>= 8n;
+    }
+    activeNativeScratch()?.reserve(8 + octets.length);
+    writer.u8(5).u32(1 + octets.length).u8(negative ? 1 : 0).bytes(Uint8Array.from(octets));
+    return;
+  }
+  if (node.kind === "float64") {
+    const number = Number(requireString(node.decimal, `${at}.decimal`));
+    if (!Number.isFinite(number)) fail("non-finite", `${at} is not finite`);
+    if (Object.is(number, -0)) fail("negative-zero", `${at} is negative zero`);
+    const content = new Uint8Array(8);
+    new DataView(content.buffer).setFloat64(0, number, false);
+    writer.u8(6).u32(8).bytes(content);
+    return;
+  }
+  if (node.kind === "text") {
+    const text2 = requireString(node.value, `${at}.value`);
+    assertUnicodeScalars(text2, at);
+    const content = encoder2.encode(text2);
+    writer.u8(7).u32(content.byteLength).bytes(content);
+    return;
+  }
+  if (node.kind === "bytes") {
+    const content = decodeHex(requireString(node.hex, `${at}.hex`), at, writer.iteration);
+    writer.u8(8).u32(content.byteLength).bytes(content);
+    return;
+  }
+  if (node.kind === "bytes-base64") {
+    writer.base64(requireString(node.value, `${at}.value`));
+    return;
+  }
+  if (node.kind === "bytes-buffer") {
+    if (!(node.value instanceof Uint8Array)) fail("frame-malformed", `${at}.value is not an owned byte buffer`);
+    writer.u8(8).u32(node.value.length).bytes(node.value);
+    return;
+  }
+  if (node.kind === "array") {
+    const items = requireArray(node.items, `${at}.items`);
+    writer.u8(9).region((content) => {
+      content.u32(items.length);
+      nativeArray(items).forEach((item2, index) => encodeValue(item2, content, `${at}[${index}]`, depth + 1));
+    });
+    return;
+  }
+  if (node.kind === "record" || node.kind === void 0) {
+    const entries = node.kind === "record" ? requireArray(node.entriesInCanonicalOrder, `${at}.entriesInCanonicalOrder`) : nativeSort(nativeEntries(node), ([left], [right]) => compareBytes2(encodeText(left, at), encodeText(right, at)));
+    writer.u8(10).region((content) => {
+      content.u32(entries.length);
+      let prior;
+      for (const [index, entryValue] of entries.entries()) {
+        if (!Array.isArray(entryValue) || entryValue.length !== 2) fail("shape", `${at}.entries[${index}] must be a pair`);
+        const key = encodeText(requireString(entryValue[0], `${at}.key`), `${at}.key`);
+        if (prior !== void 0 && compareBytes2(prior, key) >= 0) fail("canonical-order", `${at} keys are not strictly ordered`);
+        content.u32(key.byteLength).bytes(key);
+        encodeValue(entryValue[1], content, `${at}.${String(entryValue[0])}`, depth + 1);
+        prior = key;
+      }
+    });
+    return;
+  }
+  if (node.kind === "variant") {
+    const tag = encodeName(node.tag, `${at}.tag`);
+    writer.u8(11).region((content) => {
+      content.u32(tag.byteLength).bytes(tag);
+      encodeValue(node.value, content, `${at}.value`, depth + 1);
+    });
+    return;
+  }
+  if (node.kind === "forbidden-crossing") fail("forbidden-crossing", `${at} cannot cross the ABI`);
+  fail("value-kind", `${at} has unknown kind ${String(node.kind)}`);
+}
+function decodeValue(reader, at, depth = 0) {
+  assertValueDepth(depth);
+  activeNativeScratch()?.node();
+  const tag = reader.u8();
+  const content = reader.region(reader.u32());
+  let node;
+  if (tag === 1 || tag === 2) {
+    if (content.remaining !== 0) fail("frame-malformed", `${at} boolean has content`);
+    node = { kind: "boolean", value: tag === 2 };
+  } else if (tag === 3 || tag === 4) {
+    if (content.remaining !== 8) fail("frame-malformed", `${at} fixed integer is not eight octets`);
+    let integer2 = unsignedBigInt(content.bytes(8));
+    if (tag === 3 && (integer2 & 1n << 63n) !== 0n) integer2 -= 1n << 64n;
+    node = { kind: tag === 3 ? "i64" : "u64", decimal: integer2.toString() };
+  } else if (tag === 5) {
+    const sign = content.u8();
+    const magnitudeBytes = content.bytes(content.remaining);
+    if (sign > 1 || magnitudeBytes.byteLength === 0 && sign !== 0 || magnitudeBytes[0] === 0) {
+      fail("frame-malformed", `${at} arbitrary integer is not minimal`);
+    }
+    const magnitude = unsignedBigInt(magnitudeBytes);
+    node = { kind: "integer", decimal: (sign === 1 ? -magnitude : magnitude).toString() };
+  } else if (tag === 6) {
+    if (content.remaining !== 8) fail("frame-malformed", `${at} float is not eight octets`);
+    const bytes = content.bytes(8);
+    const number = new DataView(bytes.buffer, bytes.byteOffset, 8).getFloat64(0, false);
+    if (!Number.isFinite(number)) fail("non-finite", `${at} is not finite`);
+    if (Object.is(number, -0)) fail("negative-zero", `${at} is negative zero`);
+    node = { kind: "float64", decimal: String(number) };
+  } else if (tag === 7) {
+    node = { kind: "text", value: decodeName(content.bytes(content.remaining), at, true) };
+  } else if (tag === 8) {
+    activeNativeScratch()?.reserve(8 + content.remaining * 24);
+    activeNativeScratch()?.work(content.remaining * 3);
+    node = { kind: "bytes", hex: nativeArray([...content.bytes(content.remaining)]).map(hexOctet).join("") };
+  } else if (tag === 9) {
+    const count = content.u32();
+    const items = [];
+    for (let index = 0; index < count; index += 1) {
+      const item2 = decodeValue(content, `${at}[${index}]`, depth + 1);
+      items.push(item2.kind === "boolean" ? item2.value : item2);
+    }
+    node = { kind: "array", items };
+  } else if (tag === 10) {
+    const count = content.u32();
+    const entriesInCanonicalOrder = [];
+    let prior;
+    for (let index = 0; index < count; index += 1) {
+      const raw = content.bytes(content.u32());
+      if (prior !== void 0 && compareBytes2(prior, raw) >= 0) fail("frame-malformed", `${at} keys are not canonical`);
+      const key = decodeName(raw, `${at}.key[${index}]`);
+      const value = decodeValue(content, `${at}.${key}`, depth + 1);
+      entriesInCanonicalOrder.push([key, value.kind === "boolean" ? value.value : value]);
+      prior = raw;
+    }
+    node = { kind: "record", entriesInCanonicalOrder };
+  } else if (tag === 11) {
+    const variant = decodeName(content.bytes(content.u32()), `${at}.tag`);
+    const value = decodeValue(content, `${at}.value`, depth + 1);
+    node = { kind: "variant", tag: variant, value: value.kind === "boolean" ? value.value : value };
+  } else if (tag === 12) {
+    if (content.remaining !== 0) fail("frame-malformed", `${at} null has content`);
+    node = { kind: "null" };
+  } else {
+    fail("frame-malformed", `${at} has unknown tag ${tag}`);
+  }
+  if (content.remaining !== 0) fail("frame-malformed", `${at} leaves ${content.remaining} content octets`);
+  return node;
+}
+function materialize(node) {
+  activeNativeScratch()?.node();
+  if (node.kind === "null") return null;
+  if (node.kind === "boolean" || node.kind === "text") return node.value;
+  if (node.kind === "array") return nativeArray(node.items).map((item2) => isValueNode(item2) ? materialize(item2) : item2);
+  if (node.kind === "record") return nativeRecord(
+    nativeArray(node.entriesInCanonicalOrder).map(([key, value]) => [key, isValueNode(value) ? materialize(value) : value])
+  );
+  if (node.kind === "variant") return {
+    kind: "variant",
+    tag: node.tag,
+    value: isValueNode(node.value) ? materialize(node.value) : node.value
+  };
+  return node;
+}
+function isValueNode(value) {
+  return value !== null && typeof value === "object" && typeof value.kind === "string";
+}
+function requireRecord(value, at) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) fail("shape", `${at} must be a record`);
+  return value;
+}
+function requireArray(value, at) {
+  if (!Array.isArray(value)) fail("shape", `${at} must be an array`);
+  return value;
+}
+function requireString(value, at) {
+  if (typeof value !== "string") fail("shape", `${at} must be a string`);
+  return value;
+}
+function parseDecimal(value, at) {
+  const decimal = requireString(value, `${at}.decimal`);
+  activeNativeScratch()?.text(decimal);
+  if (!/^-?(?:0|[1-9][0-9]*)$/u.test(decimal) || decimal === "-0") fail("integer-spelling", `${at} is not canonical decimal`);
+  return BigInt(decimal);
+}
+function encodeName(value, at) {
+  const text2 = requireString(value, at);
+  if (text2.length === 0) fail("name-empty", `${at} must not be empty`);
+  return encodeText(text2, at);
+}
+function encodeText(text2, at) {
+  assertUnicodeScalars(text2, at);
+  return encoder2.encode(text2);
+}
+function decodeName(bytes, at, allowEmpty = false) {
+  activeNativeScratch()?.reserve(8 + bytes.length * 3);
+  activeNativeScratch()?.work(bytes.length);
+  let text2;
+  try {
+    text2 = decoder.decode(bytes);
+  } catch {
+    fail("invalid-utf8", `${at} is not fatal UTF-8`);
+  }
+  if (!allowEmpty && text2.length === 0) fail("name-empty", `${at} must not be empty`);
+  return text2;
+}
+function assertUnicodeScalars(value, at) {
+  activeNativeScratch()?.reserve(8 + value.length * 3);
+  for (let index = 0; index < value.length; index += 1) {
+    activeNativeScratch()?.iteration();
+    const unit = value.charCodeAt(index);
+    if (unit >= 55296 && unit <= 56319) {
+      const next = value.charCodeAt(index + 1);
+      if (index + 1 >= value.length || next < 56320 || next > 57343) {
+        fail("lone-surrogate", `${at} contains an unpaired high surrogate`);
+      }
+      index += 1;
+    } else if (unit >= 56320 && unit <= 57343) {
+      fail("lone-surrogate", `${at} contains an unpaired low surrogate`);
+    }
+  }
+}
+function decodeHex(value, at, iteration) {
+  activeNativeScratch()?.work(value.length);
+  activeNativeScratch()?.reserve(8 + Math.ceil(value.length / 2));
+  if (value.length % 2 !== 0 || !/^[0-9a-f]*$/u.test(value)) fail("hex", `${at} is not lowercase whole-octet hex`);
+  const bytes = new Uint8Array(value.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    (iteration ?? activeNativeScratch()?.iteration)?.();
+    bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
+}
+function bigEndian(value, length) {
+  const bytes = new Uint8Array(length);
+  for (let index = length - 1; index >= 0; index -= 1) {
+    bytes[index] = Number(value & 0xffn);
+    value >>= 8n;
+  }
+  return bytes;
+}
+function unsignedBigInt(bytes) {
+  activeNativeScratch()?.reserve(8 + bytes.length * 6);
+  let value = 0n;
+  for (const octet of bytes) {
+    activeNativeScratch()?.iteration();
+    value = value << 8n | BigInt(octet);
+  }
+  return value;
+}
+function compareBytes2(left, right) {
+  const shared = Math.min(left.byteLength, right.byteLength);
+  for (let index = 0; index < shared; index += 1) {
+    activeNativeScratch()?.iteration();
+    if (left[index] !== right[index]) return (left[index] ?? 0) - (right[index] ?? 0);
+  }
+  return left.byteLength - right.byteLength;
+}
+function equalBytes2(left, right) {
+  return left.byteLength === right.byteLength && nativeArray(left).every((octet, index) => octet === right[index]);
+}
+function hexOctet(value) {
+  return value.toString(16).padStart(2, "0");
+}
+function fail(code, detail) {
+  throw new Error(`lua-vm.value-abi.${code}: ${detail}`);
+}
+var ByteWriter = class _ByteWriter {
+  #bytes = [];
+  #target;
+  #offset = 0;
+  iteration;
+  #storage = activeNativeScratch()?.child();
+  #finished = false;
+  constructor(iteration = activeNativeScratch()?.iteration, target) {
+    this.#storage?.reserve(8);
+    this.iteration = iteration;
+    this.#target = target;
+  }
+  u8(value) {
+    if (this.#finished) throw new Error("finished ABI writer");
+    if (this.#target) {
+      if (this.#offset >= this.#target.length) fail("capacity", "direct invocation exceeds reserved input");
+      this.#target[this.#offset++] = value & 255;
+    } else {
+      this.#storage?.reserve(16);
+      this.#bytes.push(value & 255);
+    }
+    return this;
+  }
+  u32(value) {
+    if (!Number.isSafeInteger(value) || value < 0 || value > 4294967295) fail("length", `invalid u32 ${value}`);
+    this.u8(value >>> 24).u8(value >>> 16).u8(value >>> 8).u8(value);
+    return this;
+  }
+  bytes(value) {
+    for (let index = 0; index < value.byteLength; index += 1) {
+      this.iteration?.();
+      this.u8(value[index] ?? 0);
+    }
+    return this;
+  }
+  region(fill) {
+    if (!this.#target) {
+      const append = () => {
+        const content = new _ByteWriter(this.iteration);
+        fill(content);
+        const bytes = content.finish();
+        return this.u32(bytes.length).bytes(bytes);
+      };
+      return activeNativeScratch()?.transient(append) ?? append();
+    }
+    const start = this.#offset;
+    this.u32(0);
+    fill(this);
+    new DataView(this.#target.buffer, this.#target.byteOffset + start, 4).setUint32(0, this.#offset - start - 4, false);
+    return this;
+  }
+  base64(value) {
+    if (!this.#target) fail("value-kind", "base64 leaf is restricted to the direct host encoder");
+    if (value.length % 4) fail("base64", "incomplete quartet");
+    const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+    const length = value.length / 4 * 3 - padding;
+    this.u8(8).u32(length);
+    const digit = (index) => {
+      const c = value.charCodeAt(index);
+      if (c >= 65 && c <= 90) return c - 65;
+      if (c >= 97 && c <= 122) return c - 71;
+      if (c >= 48 && c <= 57) return c + 4;
+      if (c === 43) return 62;
+      if (c === 47) return 63;
+      return fail("base64", "invalid alphabet or misplaced padding");
+    };
+    const emit = (byte) => {
+      this.iteration?.();
+      this.u8(byte);
+    };
+    for (let i = 0; i < value.length; i += 4) {
+      const a = digit(i), b = digit(i + 1), remaining = length - i / 4 * 3;
+      if (remaining === 1) {
+        if (value.slice(i + 2) !== "==" || b & 15) fail("base64", "noncanonical final octet");
+        emit(a << 2 | b >> 4);
+      } else {
+        const c = digit(i + 2);
+        if (remaining === 2) {
+          if (value[i + 3] !== "=" || c & 3) fail("base64", "noncanonical final pair");
+          emit(a << 2 | b >> 4);
+          emit(b << 4 | c >> 2);
+        } else {
+          const d = digit(i + 3);
+          emit(a << 2 | b >> 4);
+          emit(b << 4 | c >> 2);
+          emit(c << 6 | d);
+        }
+      }
+    }
+  }
+  finish() {
+    if (this.#finished) throw new Error("finished ABI writer");
+    if (this.#target) {
+      this.#finished = true;
+      this.#storage?.close();
+      return this.#target.subarray(0, this.#offset);
+    }
+    activeNativeScratch()?.reserve(8 + this.#bytes.length);
+    const bytes = new Uint8Array(this.#bytes.length);
+    for (let i = 0; i < bytes.length; i++) {
+      this.iteration?.();
+      bytes[i] = this.#bytes[i];
+    }
+    this.#finished = true;
+    this.#bytes.length = 0;
+    this.#storage?.close();
+    return bytes;
+  }
+};
+var ByteReader = class _ByteReader {
+  #offset = 0;
+  source;
+  constructor(source) {
+    this.source = source;
+  }
+  get remaining() {
+    return this.source.byteLength - this.#offset;
+  }
+  u8() {
+    return this.bytes(1)[0] ?? fail("frame-malformed", "missing octet");
+  }
+  u32() {
+    const bytes = this.bytes(4);
+    return (bytes[0] ?? 0) * 16777216 + ((bytes[1] ?? 0) << 16) + ((bytes[2] ?? 0) << 8) + (bytes[3] ?? 0) >>> 0;
+  }
+  bytes(length) {
+    if (!Number.isSafeInteger(length) || length < 0 || length > this.remaining) fail("frame-malformed", `need ${length}, have ${this.remaining}`);
+    const bytes = this.source.subarray(this.#offset, this.#offset + length);
+    this.#offset += length;
+    return bytes;
+  }
+  region(length) {
+    return new _ByteReader(this.bytes(length));
+  }
+};
+
+// ../../packages/lua-vm/src/retained.ts
+var RETAINED_VM_SHA256 = "f0646d258acf98a02eabf678aea7ae90f118fca6e1014515ffbdb95987c54e37";
+var DEFAULT_RETAINED_EFFECT_WORK = 32e6;
+var RETAINED_LUA_FUEL = 1e6;
+var RETAINED_ADMISSION_LUA_FUEL = 1e5;
+function authoredVmHostFailure(code, message) {
+  return Object.assign(new Error(`${code}: ${message}`), { error: {
+    code,
+    message,
+    responsibility: "host",
+    retryability: "no"
+  } });
+}
+function retainedVmFailure(status, fuelConsumed, phase) {
+  const resource = status === -17 ? "allocation-limit" : status === -18 ? "fuel-exhausted" : status === -28 ? "depth-limit" : status === -26 || phase === "admission" && status === -2 ? "output-limit" : void 0;
+  const error = resource === void 0 ? environmentFailure(status) : luaResourceError(`lua-vm.resource.${resource}`, "retained Lua execution failed");
+  error.message += ` (${phase}, VM status ${status})`;
+  Object.defineProperties(error, {
+    fuelConsumed: { value: fuelConsumed, enumerable: true },
+    vmStatus: { value: status, enumerable: true },
+    phase: { value: phase, enumerable: true }
+  });
+  return error;
+}
+function resolveRetainedLuaPolicy(request2 = {}) {
+  if (nativeArray(nativeKeys(request2)).some((key) => !["maximumEncodedInputBytes", "maximumEncodedOutputBytes", "maximumVmAllocationBytes"].includes(key)))
+    throw luaResourceError("lua-vm.resource.policy-limit", "unsupported retained byte/allocation policy member");
+  const policy = resolveLuaResourcePolicy(request2);
+  return Object.freeze({
+    maximumEncodedInputBytes: policy.maximumEncodedInputBytes,
+    maximumEncodedOutputBytes: policy.maximumEncodedOutputBytes,
+    maximumVmAllocationBytes: policy.maximumVmAllocationBytes
+  });
+}
+var dispatcher = `
+local type,error,fields,sort=type,error,pdrv.record_fields,table.sort
+local create,resume,status,yield=coroutine.create,coroutine.resume,coroutine.status,coroutine.yield
+local readonly,array,null=pdrv.readonly,pdrv.array,pdrv.null
+local char,unpack=string.char,table.unpack
+local description,callables=pdrv.entry()
+local bindings={}
+local resolved={}
+if type(callables)~="table" then error("callable table required") end
+for name,fn in fields(callables) do
+  if type(name)~="string" or type(fn)~="function" then error("invalid callable binding") end
+  bindings[#bindings+1]=name
+  resolved[name]=fn
+end
+sort(bindings)
+local invalidation=description.invalidation and resolved[description.invalidation]
+local tasks={}
+local function dispatch(input)
+  local action,key=input.action,input.id
+  if action=="retire" then tasks[key]=nil; return {kind="retired"} end
+  if action=="invalidate" then
+    if invalidation then invalidation(input.value) end
+    return {kind="invalidated"}
+  end
+  if action=="start" then
+    local fn=resolved[input.binding]
+    if type(fn)~="function" then error("unresolved binding") end
+    local api=readonly({request=function(effect) return yield(effect) end,resultDestination=input.destination})
+    local arguments=input.arguments
+    if input.octets then arguments=readonly({input=char(unpack(input.octets)),sequence=arguments.sequence,channelId=arguments.channelId,observation=arguments.observation}) end
+    if input.relayOctets then
+      local request={}
+      for name,value in fields(arguments) do request[name]=value end
+      request.bytes=input.relayOctets
+      arguments=readonly(request)
+    end
+    tasks[key]=create(function()
+      if input.context and input.context.reentryRequired then
+        local enter=resolved[input.context.reentryBinding]
+        if type(enter)~="function" then error("unresolved reentry") end
+        if enter(readonly({modeId=input.context.modeId,profileId=input.context.profileId}),api,input.context)~=nil then
+          error("reentry must return nil")
+        end
+      end
+      local result=fn(arguments,api,input.context)
+      if result==nil then result=null end
+      return {kind="result",value=result}
+    end)
+  end
+  -- Public byte-valued arguments remain immutable ABI boundary values. A
+  -- channel completion instead becomes the raw Lua string protocol code can
+  -- parse. The host supplies bounded octets, never UTF-8-decoded payload text.
+  local value=input.value
+  if action=="resume" and input.octets then value=(input.waitPrefix or "")..char(unpack(input.octets)) end
+  if action=="resume" and input.rawOctets then value=(input.waitPrefix or "")..input.rawOctets end
+  local ok,result=resume(tasks[key],value)
+  if not ok then error(result) end
+  local ended=status(tasks[key])=="dead"
+  if ended then tasks[key]=nil end
+  -- Outside the authored value: yielding a result is not coroutine death.
+  return {ended=ended,value=result}
+end
+return {description=description,bindings=array(bindings)},{dispatch=dispatch}
+`;
+function abi(value) {
+  activeNativeScratch()?.node();
+  if (typeof value === "string") activeNativeScratch()?.text(value);
+  if (value instanceof Uint8Array) activeNativeScratch()?.reserve(16);
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") return { kind: "text", value };
+  if (typeof value === "number") return { kind: "float64", decimal: String(value) };
+  if (typeof value === "bigint") return { kind: "integer", decimal: String(value) };
+  if (value instanceof Uint8Array) return { kind: "bytes-buffer", value };
+  if (Array.isArray(value)) return { kind: "array", items: nativeArray(value).map(abi) };
+  if (value && typeof value === "object") return { kind: "record", entriesInCanonicalOrder: nativeArray(nativeSort(nativeEntries(value), ([a], [b]) => a < b ? -1 : a > b ? 1 : 0)).map(([key, v]) => [key, abi(v)]) };
+  throw new Error("retained ABI input is not a supported value");
+}
+function argumentAbi(value, schema, iteration, directBytes = false) {
+  iteration?.();
+  activeNativeScratch()?.reserve(8);
+  if (schema.kind === "record") return { kind: "record", entriesInCanonicalOrder: nativeSort(nativeArray(nativeKeys(schema.fields))).map((key) => [key, argumentAbi(value[key], schema.fields[key], iteration, directBytes)]) };
+  if (schema.kind === "array") return { kind: "array", items: nativeArray(value).map((item2) => argumentAbi(item2, schema.item, iteration, directBytes)) };
+  if (schema.kind === "variant") {
+    const v = value;
+    return { kind: "record", entriesInCanonicalOrder: [["kind", abi("variant")], ["tag", abi(v.tag)], ["value", argumentAbi(v.value, schema.variants[v.tag], iteration, directBytes)]] };
+  }
+  if (schema.kind === "integer") return { kind: schema.signed ? "i64" : "u64", decimal: typeof value === "number" ? String(value) : value.value };
+  if (schema.kind === "decimal") return abi(value.value);
+  if (schema.kind === "bytes") {
+    if (directBytes) return { kind: "bytes-base64", value: value.value };
+    activeNativeScratch()?.text(value.value);
+    const bytes = atob(value.value);
+    let hex2 = "";
+    for (let i = 0; i < bytes.length; i++) {
+      iteration?.();
+      hex2 += bytes.charCodeAt(i).toString(16).padStart(2, "0");
+    }
+    return { kind: "bytes", hex: hex2 };
+  }
+  return abi(value);
+}
+function invocationSemantic(request2, types, iteration, directBytes = false) {
+  const semantic = abi(types ? { ...request2, arguments: null } : request2);
+  if (types) {
+    const args = request2.arguments;
+    semantic.entriesInCanonicalOrder.find(([key]) => key === "arguments")[1] = {
+      kind: "record",
+      entriesInCanonicalOrder: nativeSort(nativeArray(nativeKeys(types))).map((key) => [key, argumentAbi(args[key], types[key], iteration, directBytes)])
+    };
+  }
+  return semantic;
+}
+function assertSourceDeclarationPolicy(operation, maximum) {
+  const args = {}, types = {};
+  let payload = 0;
+  for (const [name2, type2] of nativeEntries(operation.arguments)) if (type2.kind === "byte-source") {
+    args[name2] = { type: "bytes", encoding: "base64", value: "" };
+    types[name2] = { kind: "bytes" };
+    payload += type2.maximumBytes;
+  }
+  if (!nativeKeys(types).length) return;
+  const semantic = invocationSemantic({
+    action: "start",
+    id: "retained-operation-0",
+    binding: operation.binding,
+    arguments: args,
+    value: null,
+    destination: null
+  }, types);
+  if (encodeLuaProgramInvocation("dispatch", semantic).length + payload > maximum)
+    throw luaResourceError("lua-vm.resource.input-limit", "declared source population cannot fit complete invocation policy");
+}
+function exactIntegers(node, value) {
+  activeNativeScratch()?.node();
+  if (!node || typeof node !== "object") return value;
+  const n = node;
+  if (["i64", "u64", "integer"].includes(n.kind)) {
+    activeNativeScratch()?.text(n.decimal);
+    return BigInt(n.decimal);
+  }
+  if (n.kind === "array") return nativeArray(n.items).map((child, i) => exactIntegers(child, value[i]));
+  if (n.kind === "record") return nativeRecord(nativeArray(n.entriesInCanonicalOrder).map(([key, child]) => [key, exactIntegers(child, value[key])]));
+  if (n.kind === "variant") return { ...value, value: exactIntegers(n.value, value.value) };
+  return value;
+}
+function effectNumbers(value) {
+  activeNativeScratch()?.node();
+  if (typeof value === "bigint") return value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value;
+  if (Array.isArray(value)) return nativeArray(value).map(effectNumbers);
+  if (value && typeof value === "object" && !(value instanceof Uint8Array)) return nativeRecord(nativeArray(nativeEntries(value)).map(([key, child]) => [key, effectNumbers(child)]));
+  return value;
+}
+async function openRetainedLua(source, artifact, request2 = {}, nativeData = new StandaloneNativeData()) {
+  const policy = resolveRetainedLuaPolicy(request2);
+  const bytes = artifact.slice();
+  const digest2 = nativeArray([...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]).map((v) => v.toString(16).padStart(2, "0")).join("");
+  if (digest2 !== RETAINED_VM_SHA256) throw authoredVmHostFailure(
+    "authored.vm.digest-mismatch",
+    "the bundled retained VM does not match its build identity"
+  );
+  let e;
+  let chargeEncoding, encodingFailure;
+  let poisoned = false, allocationSerial = 0;
+  const scratch = /* @__PURE__ */ new Map();
+  const hostScratch = /* @__PURE__ */ new Set();
+  const failureScratch = /* @__PURE__ */ new Map();
+  const nativeWork = (units) => {
+    if (encodingFailure !== void 0) throw encodingFailure;
+    if (!chargeEncoding) throw new Error("authored.vm.encoding-account-missing");
+    chargeEncoding(units);
+  };
+  const forbidden = () => {
+    throw new Error("authored.vm.forbidden-host-call");
+  };
+  const { instance } = await WebAssembly.instantiate(bytes, {
+    env: {
+      emscripten_notify_memory_growth() {
+      },
+      __syscall_dup3: forbidden,
+      pdrv_retained_work(units) {
+        try {
+          nativeWork(units);
+        } catch (cause) {
+          poisoned = true;
+          encodingFailure = cause;
+          throw cause;
+        }
+      },
+      pdrv_retained_reserve(capacity) {
+        try {
+          if (allocationSerial === 4294967295) throw luaResourceError("retained.helper-data-exhausted", "scratch identity exhausted");
+          const held = (activeNativeScratch()?.dataAccount ?? nativeData).reserve(capacity);
+          const id = ++allocationSerial;
+          scratch.set(id, held);
+          return id;
+        } catch (cause) {
+          poisoned = true;
+          encodingFailure = cause;
+          throw cause;
+        }
+      },
+      pdrv_retained_release(id) {
+        const held = scratch.get(id);
+        if (!held) throw new Error("authored.vm.scratch-ownership");
+        held.release();
+        scratch.delete(id);
+      },
+      pdrv_retained_charge_work(units) {
+        if (encodingFailure !== void 0) return 0;
+        try {
+          if (!chargeEncoding) throw new Error("authored.vm.encoding-account-missing");
+          chargeEncoding(units);
+          return 1;
+        } catch (cause) {
+          encodingFailure = cause;
+          return 0;
+        }
+      },
+      pdrv_lua_require_source(np, nl, out, capacity) {
+        try {
+          activeNativeScratch()?.reserve(8 + nl * 3);
+          nativeWork(nl);
+          const name2 = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(e.memory.buffer, np, nl));
+          const owned = source.sourceBytes(name2, (length) => {
+            activeNativeScratch()?.reserve(8 + length);
+            nativeWork(1 + Math.ceil(length / 256));
+          });
+          if (!owned) return -1;
+          if (!capacity) return owned.length;
+          if (owned.length > capacity) return -1;
+          nativeWork(1 + Math.ceil(owned.length / 256));
+          new Uint8Array(e.memory.buffer, out, owned.length).set(owned);
+          return owned.length;
+        } catch (cause) {
+          poisoned = true;
+          encodingFailure = cause;
+          throw cause;
+        }
+      }
+    },
+    wasi_snapshot_preview1: { fd_read: forbidden, fd_write: forbidden, fd_close: forbidden, fd_seek: forbidden }
+  });
+  e = instance.exports;
+  e._initialize();
+  if (e.pdrv_lua_vm_smoke() !== 42 || typeof e.pdrv_retained_result_encode !== "function") throw authoredVmHostFailure(
+    "authored.vm.contract-mismatch",
+    "the bundled retained VM does not implement the required host contract"
+  );
+  const inputCapacity = policy.maximumEncodedInputBytes;
+  let outputCapacity = policy.maximumEncodedOutputBytes, output = e.malloc(outputCapacity);
+  const input = e.malloc(inputCapacity), fuel = e.malloc(4), handleOut = e.malloc(4);
+  let handle = 0, closed = false;
+  const accounts = /* @__PURE__ */ new Map();
+  const workChargers = /* @__PURE__ */ new Map();
+  const endedTasks = /* @__PURE__ */ new Set();
+  const sourceInputMeters = /* @__PURE__ */ new Map();
+  const retainedAccounts = /* @__PURE__ */ new Map();
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    accounts.clear();
+    retainedAccounts.clear();
+    workChargers.clear();
+    endedTasks.clear();
+    sourceInputMeters.clear();
+    try {
+      if (!poisoned) {
+        e.pdrv_retained_scratch_clear();
+        if (handle) e.pdrv_retained_result_close(handle);
+        for (const p of [input, output, fuel, handleOut]) if (p) e.free(p);
+      }
+    } finally {
+      for (const held of scratch.values()) held.release();
+      scratch.clear();
+      for (const scope of hostScratch) scope.close();
+      hostScratch.clear();
+      failureScratch.clear();
+      if (poisoned) e = void 0;
+    }
+  };
+  const put = (v) => {
+    if (v.length > inputCapacity) throw luaResourceError("lua-vm.resource.input-limit", "encoded input exceeds resolved policy");
+    activeNativeScratch()?.work(1 + Math.ceil(v.length / 256));
+    new Uint8Array(e.memory.buffer, input, v.length).set(v);
+  };
+  try {
+    if (!input || !output || !fuel || !handleOut) throw authoredVmHostFailure(
+      "authored.vm.allocation-failed",
+      "the host could not allocate retained VM working memory"
+    );
+    const code = new TextEncoder().encode(dispatcher);
+    put(code);
+    let admissionWork = 0;
+    chargeEncoding = (units) => {
+      if (admissionWork + units > 1e5) throw luaResourceError("retained.work-exhausted", "native admission work exhausted");
+      admissionWork += units;
+    };
+    const admissionScratch = new NativeScratch(nativeData, nativeWork);
+    hostScratch.add(admissionScratch);
+    admissionScratch.reserve(8 + 64 * 64);
+    withNativeScratch(admissionScratch, () => {
+      const entry = source.sourceBytes("device.lua", (length) => {
+        admissionScratch.reserve(8 + length);
+        admissionScratch.work(1 + Math.ceil(length / 256));
+      });
+      if (!entry) throw new Error("authored.entry.missing");
+    });
+    let result;
+    try {
+      result = withNativeScratch(admissionScratch, () => e.pdrv_retained_result_open(input, code.length, output, outputCapacity, policy.maximumVmAllocationBytes, RETAINED_ADMISSION_LUA_FUEL, fuel, handleOut));
+    } finally {
+      if (!poisoned) e.pdrv_retained_scratch_clear();
+    }
+    handle = new DataView(e.memory.buffer).getUint32(handleOut, true);
+    if (encodingFailure) throw encodingFailure;
+    if (result < 0) throw retainedVmFailure(result, new DataView(e.memory.buffer).getUint32(fuel, true), "admission");
+    if (!handle) throw new Error("authored.vm.admission-handle-missing");
+    const admission = withNativeScratch(admissionScratch, () => {
+      admissionScratch.reserve(8 + result);
+      admissionScratch.work(1 + Math.ceil(result / 256));
+      return requireLuaAdmissionResult(decodeLuaValueAbiFrame(new Uint8Array(e.memory.buffer, output, result).slice()));
+    });
+    const graph = admission.graph;
+    e.free(output);
+    output = 0;
+    outputCapacity = Math.max(1, Math.ceil(policy.maximumEncodedOutputBytes / 16));
+    output = e.malloc(outputCapacity);
+    if (!output) throw authoredVmHostFailure(
+      "authored.vm.allocation-failed",
+      "the host could not allocate retained VM output memory"
+    );
+    const [handlerBindings, authorizationBindings] = withNativeScratch(admissionScratch, () => {
+      const handlers = graph.description.handlers ?? [];
+      admissionScratch.reserve(16 + handlers.length * 64);
+      admissionScratch.work(handlers.length * 2);
+      return [
+        new Set(nativeArray(handlers).map((handler) => handler.binding)),
+        new Set(nativeArray(handlers).map((handler) => handler.authorizeWrite))
+      ];
+    });
+    chargeEncoding = void 0;
+    const invoke = (id, request3, argumentTypes) => {
+      if (closed || !accounts.has(id)) throw new Error("authored.vm.account-revoked");
+      const remaining = accounts.get(id).maximumFuel - accounts.get(id).consumed;
+      if (remaining <= 0) {
+        close();
+        throw retainedVmFailure(-18, 0, "dispatch");
+      }
+      new DataView(e.memory.buffer).setUint32(fuel, 0, true);
+      encodingFailure = void 0;
+      chargeEncoding = (units) => {
+        const account = accounts.get(id);
+        const charge = workChargers.get(id);
+        if (charge) charge(units);
+        else if (account.work + units > DEFAULT_RETAINED_EFFECT_WORK) throw luaResourceError("retained.work-exhausted", "native encoding work exhausted");
+        account.work += units;
+      };
+      const caller = activeNativeScratch();
+      const data = caller?.owner === id ? caller.dataAccount : nativeData;
+      const inputScope = new NativeScratch(data, nativeWork, id);
+      hostScratch.add(inputScope);
+      const scope = new NativeScratch(data, nativeWork, id);
+      hostScratch.add(scope);
+      let authoredFailure = false;
+      try {
+        const { count, consumed } = withNativeScratch(inputScope, () => {
+          request3 = typeof request3 === "function" ? request3() : request3;
+          const direct = argumentTypes !== void 0 && (sourceInputMeters.has(id) || request3.relayOctets instanceof Uint8Array);
+          const iteration = inputScope.iteration;
+          const semantic = invocationSemantic(request3, argumentTypes, iteration, direct);
+          let encodedLength;
+          if (direct) encodedLength = encodeLuaProgramInvocationInto(
+            "dispatch",
+            semantic,
+            new Uint8Array(e.memory.buffer, input, inputCapacity),
+            iteration
+          );
+          else {
+            const encoded = encodeLuaProgramInvocation("dispatch", semantic, iteration);
+            put(encoded);
+            encodedLength = encoded.length;
+          }
+          let count2;
+          count2 = e.pdrv_retained_result_dispatch(handle, input, encodedLength, output, outputCapacity, remaining, fuel);
+          while (count2 === -26 && outputCapacity < policy.maximumEncodedOutputBytes) {
+            e.free(output);
+            output = 0;
+            outputCapacity = policy.maximumEncodedOutputBytes;
+            output = e.malloc(outputCapacity);
+            if (!output) throw authoredVmHostFailure(
+              "authored.vm.allocation-failed",
+              "the host could not grow retained VM output memory"
+            );
+            count2 = e.pdrv_retained_result_encode(handle, output, outputCapacity);
+          }
+          const consumed2 = new DataView(e.memory.buffer).getUint32(fuel, true);
+          accounts.get(id).consumed += consumed2;
+          if (encodingFailure) throw encodingFailure;
+          if (count2 < 0) throw retainedVmFailure(count2, consumed2, "dispatch");
+          return { count: count2, consumed: consumed2 };
+        });
+        inputScope.close();
+        hostScratch.delete(inputScope);
+        return withNativeScratch(scope, () => {
+          activeNativeScratch()?.reserve(8 + count);
+          activeNativeScratch()?.work(1 + Math.ceil(count / 256));
+          const decoded = decodeLuaValueAbiFrame(new Uint8Array(e.memory.buffer, output, count).slice());
+          authoredFailure = decoded.envelopeKind === "program-failure";
+          let value = exactIntegers(decoded.semantic, requireLuaProgramInvocationOutcome(decoded).value);
+          const action = request3.action;
+          if (action === "start" || action === "resume") {
+            scope.work(2);
+            if (!value || typeof value !== "object" || !("ended" in value) || typeof value.ended !== "boolean" || !("value" in value))
+              throw new Error("authored.vm.invalid-task-envelope");
+            if (value.ended) endedTasks.add(id);
+            value = value.value;
+          }
+          return {
+            value: value && typeof value === "object" && "kind" in value && value.kind !== "result" ? effectNumbers(value) : value,
+            consumed,
+            release() {
+              scope.close();
+              hostScratch.delete(scope);
+            }
+          };
+        });
+      } catch (cause) {
+        if (!closed && cause instanceof Error && !Object.hasOwn(cause, "fuelConsumed"))
+          Object.defineProperty(cause, "fuelConsumed", { value: new DataView(e.memory.buffer).getUint32(fuel, true), enumerable: true });
+        if (authoredFailure && !encodingFailure && !poisoned) {
+          inputScope.close();
+          hostScratch.delete(inputScope);
+          failureScratch.set(id, scope);
+        } else close();
+        throw cause;
+      } finally {
+        if (!closed && !poisoned) e.pdrv_retained_scratch_clear();
+        chargeEncoding = void 0;
+      }
+    };
+    const admissionRun = (run) => {
+      if (closed) throw new Error("authored.vm.account-revoked");
+      chargeEncoding = (units) => {
+        if (admissionWork + units > 1e5) throw luaResourceError("retained.work-exhausted", "native admission work exhausted");
+        admissionWork += units;
+      };
+      try {
+        return withNativeScratch(admissionScratch, run);
+      } finally {
+        chargeEncoding = void 0;
+      }
+    };
+    return {
+      description: graph.description,
+      bindings: Object.freeze([...graph.bindings]),
+      admission: admissionRun,
+      execution: {
+        // Trusted composition only; no method/account crosses a session wire.
+        // Construction after description validation spends the SAME bounded
+        // effect-free evaluation account, not a third admission allowance.
+        admission: admissionRun,
+        get terminated() {
+          return closed;
+        },
+        preflightSourceInput(id, binding, args, types, lengths, iteration, destination, context) {
+          const scope = new NativeScratch(nativeData, (units) => {
+            for (let i = 0; i < units; i++) iteration();
+          });
+          try {
+            return withNativeScratch(scope, () => {
+              const empty = { ...args };
+              for (const key of nativeKeys(lengths)) {
+                iteration();
+                empty[key] = { type: "bytes", encoding: "base64", value: "" };
+              }
+              const semantic = invocationSemantic({ action: "start", id, binding, arguments: empty, value: null, destination: destination ?? null, ...context ? { context } : {} }, types, iteration);
+              const maximum = encodeLuaProgramInvocation("dispatch", semantic, iteration).length + nativeArray(nativeValues(lengths)).reduce((a, b) => a + b, 0);
+              if (maximum > inputCapacity) throw luaResourceError("lua-vm.resource.input-limit", "complete source invocation exceeds resolved input policy before reading");
+              sourceInputMeters.set(id, iteration);
+              return maximum;
+            });
+          } finally {
+            scope.close();
+          }
+        },
+        async register(id, parent, chargeWork, maximumFuel = RETAINED_LUA_FUEL, segments = 1) {
+          if (closed || accounts.has(id) || retainedAccounts.has(id) || accounts.size >= 64) throw authoredVmHostFailure(
+            "authored.vm.account-limit",
+            "the host cannot grant another retained VM execution account"
+          );
+          if (parent !== void 0 && !accounts.has(parent) && !retainedAccounts.has(parent)) throw new Error("authored.vm.account-revoked");
+          if (!Number.isSafeInteger(maximumFuel) || maximumFuel < 1 || maximumFuel > RETAINED_LUA_FUEL) throw new Error("authored.vm.invalid-fuel-partition");
+          if (!Number.isSafeInteger(segments) || segments < 1 || !Number.isSafeInteger(segments * maximumFuel) || parent !== void 0 && segments !== 1)
+            throw new Error("authored.vm.invalid-segment-plan");
+          accounts.set(id, parent === void 0 ? { consumed: 0, work: 0, maximumFuel, segments, segment: 0 } : accounts.get(parent) ?? retainedAccounts.get(parent));
+          if (chargeWork) workChargers.set(id, chargeWork);
+        },
+        async advanceSegment(id, index) {
+          const account = accounts.get(id);
+          if (closed || !account || endedTasks.has(id) || !Number.isSafeInteger(index) || index <= account.segment || index >= account.segments || account.consumed >= account.maximumFuel)
+            throw new Error("authored.vm.segment-revoked");
+          let references = 0;
+          for (const population2 of [accounts, retainedAccounts]) for (const other of population2.values()) {
+            const charge = workChargers.get(id);
+            if (charge) charge(1);
+            else if (++account.work > DEFAULT_RETAINED_EFFECT_WORK) throw luaResourceError("retained.work-exhausted", "segment alias check exhausted work");
+            if (other === account && ++references > 1) throw new Error("authored.vm.segment-revoked");
+          }
+          account.segment = index;
+          account.consumed = 0;
+          account.work = 0;
+        },
+        async startOperation(id, binding, args, types, destination, context) {
+          return invoke(id, () => {
+            const channelInput = handlerBindings.has(binding) && types.input?.kind === "bytes";
+            if (channelInput) {
+              const input2 = args.input.value;
+              activeNativeScratch()?.text(input2);
+              activeNativeScratch()?.reserve(8 + input2.length * 16);
+              activeNativeScratch()?.work(input2.length);
+            }
+            const octets = channelInput ? Array.from(atob(args.input.value), (c) => c.charCodeAt(0)) : void 0;
+            let relayOctets;
+            if (authorizationBindings.has(binding) && types.bytes?.kind === "bytes") {
+              const input2 = args.bytes.value;
+              const maximum = types.bytes.maximumLength ?? 256;
+              if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 65536 || input2.length > Math.ceil(maximum / 3) * 4)
+                throw new Error("authored.vm.byte-completion-limit");
+              activeNativeScratch()?.text(input2);
+              activeNativeScratch()?.reserve(8 + input2.length * 4);
+              activeNativeScratch()?.work(input2.length);
+              relayOctets = Uint8Array.from(atob(input2), (c) => c.charCodeAt(0));
+              if (relayOctets.length > maximum) throw new Error("authored.vm.byte-completion-limit");
+            }
+            if (octets && octets.length > 256) throw new Error("authored.vm.byte-completion-limit");
+            return {
+              action: "start",
+              id,
+              binding,
+              arguments: args,
+              value: null,
+              destination: destination ?? null,
+              ...octets ? { octets } : {},
+              ...relayOctets ? { relayOctets } : {},
+              ...context ? { context } : {}
+            };
+          }, types);
+        },
+        async dispatch(id, text2) {
+          return invoke(id, () => {
+            activeNativeScratch()?.text(text2);
+            const [action, , ...rest] = text2.split("|");
+            return { action, id, value: rest.join("|") };
+          });
+        },
+        async dispatchObservation(id, observation) {
+          return invoke(id, () => {
+            nativeValue(observation);
+            return { action: "resume", id, value: { ...observation } };
+          });
+        },
+        async dispatchBytes(id, input2) {
+          return invoke(id, () => {
+            const header = nativeEncode("resume|" + id + "|");
+            if (input2.length < header.length) throw new Error("authored.vm.invalid-byte-envelope");
+            for (let i = 0; i < header.length; i++) {
+              activeNativeScratch()?.work(1);
+              if (input2[i] !== header[i]) throw new Error("authored.vm.invalid-byte-envelope");
+            }
+            const length = input2.length - header.length;
+            if (length > 256) throw new Error("authored.vm.byte-completion-limit");
+            activeNativeScratch()?.reserve(16 + length);
+            activeNativeScratch()?.work(length);
+            return { action: "resume", id, value: null, rawOctets: input2.slice(header.length) };
+          });
+        },
+        async dispatchWaitBytes(id, prefix2, bytes2) {
+          if (typeof prefix2 !== "string" || prefix2 !== "receive:" && !/^message:[a-zA-Z0-9_-]{1,64}:$/u.test(prefix2))
+            throw new Error("authored.vm.invalid-wait-prefix");
+          if (!(bytes2 instanceof Uint8Array) || bytes2.length > 256) throw new Error("authored.vm.byte-completion-limit");
+          return invoke(id, () => {
+            activeNativeScratch()?.reserve(8 + bytes2.length * 17);
+            activeNativeScratch()?.work(bytes2.length * 2);
+            const octets = bytes2.slice();
+            return { action: "resume", id, value: null, waitPrefix: prefix2, octets: [...octets] };
+          });
+        },
+        async retire(id, retainAccount = false) {
+          let consumed = 0;
+          sourceInputMeters.delete(id);
+          const failure4 = failureScratch.get(id);
+          if (failure4) {
+            failure4.close();
+            hostScratch.delete(failure4);
+            failureScratch.delete(id);
+          }
+          if (retainedAccounts.has(id)) {
+            if (!retainAccount) retainedAccounts.delete(id);
+            return;
+          }
+          try {
+            if (!closed && accounts.has(id) && !endedTasks.has(id)) {
+              const result2 = invoke(id, { action: "retire", id, value: null });
+              consumed = result2.consumed;
+              result2.release();
+            }
+            if (!closed && retainAccount && accounts.has(id)) {
+              if (retainedAccounts.size >= 1024) throw authoredVmHostFailure(
+                "authored.vm.retained-account-limit",
+                "the host cannot retain another VM execution account"
+              );
+              retainedAccounts.set(id, accounts.get(id));
+            }
+          } finally {
+            accounts.delete(id);
+            workChargers.delete(id);
+            endedTasks.delete(id);
+          }
+          return { consumed };
+        },
+        async close() {
+          close();
+        }
+      },
+      close
+    };
+  } catch (cause) {
+    close();
+    throw cause;
+  }
 }
 
 // ../../packages/core/src/values.ts
@@ -4211,13 +4283,13 @@ function validateEffectiveSourceRange(range, descriptorLength) {
   if (!Number.isSafeInteger(range.offset) || range.offset < 0 || !Number.isSafeInteger(range.length) || range.length < 1 || !Number.isSafeInteger(range.offset + range.length) || descriptorLength !== void 0 && range.offset + range.length > descriptorLength)
     throw Object.assign(
       new Error("effective source range is outside the admitted descriptor"),
-      { error: { code: "authored.transfer.source-range", message: "effective source range is outside the admitted descriptor", retryability: "no" } }
+      { error: { code: "authored.transfer.source-range", message: "effective source range is outside the admitted descriptor", responsibility: "invocation", retryability: "no" } }
     );
 }
 
 // ../../packages/core/src/authored-transfer.ts
 function transferFault(code, message) {
-  throw Object.assign(new Error(message), { error: { code, message, retryability: "no" } });
+  throw Object.assign(new Error(message), { error: { code, message, responsibility: "definition", retryability: "no" } });
 }
 function requireThat(value, code, message) {
   if (!value) transferFault(code, message);
@@ -4602,6 +4674,7 @@ var AuthoredTransfer = class _AuthoredTransfer {
       error: {
         code: "authored.transfer.carrier-bound",
         message: "carrier exceeds operation declaration",
+        responsibility: "definition",
         retryability: "no",
         details: { maximumCarrierBytes: maximum, actualBytes: bytes.length, submitted: false }
       }
@@ -4687,7 +4760,7 @@ var AuthoredTransfer = class _AuthoredTransfer {
 
 // ../../packages/core/src/streaming-result.ts
 function requireResult(ok2, message) {
-  if (!ok2) throw Object.assign(new Error(message), { error: { code: "authored.result.stream", message, retryability: "no" } });
+  if (!ok2) throw Object.assign(new Error(message), { error: { code: "authored.result.stream", message, responsibility: "definition", retryability: "no" } });
 }
 function validateStreamedResult(r, args) {
   const s = r.streamed;
@@ -4745,6 +4818,7 @@ var StreamingResult = class {
 
 // ../../packages/core/src/serial-profile.ts
 var SerialProfilePolicyError = class extends Error {
+  responsibility = "definition";
   diagnostic;
   constructor(diagnostic) {
     super(diagnostic.message);
@@ -4797,6 +4871,7 @@ function nativeUsbInRequestBytes(endpoint) {
   return endpoint.maximumPacketBytes;
 }
 var UsbProfilePolicyError = class extends Error {
+  responsibility = "definition";
   diagnostic;
   constructor(diagnostic) {
     super(diagnostic.message);
@@ -5036,9 +5111,14 @@ var AUTHORED_CAPABILITY_NAMES = Object.freeze([
 // ../../packages/core/src/authored-admission.ts
 var AuthoredAdmissionError = class extends Error {
   code;
-  constructor(code, message) {
+  responsibility;
+  error;
+  constructor(code, message, responsibility = "definition") {
     super(code + ": " + message);
+    this.name = "AuthoredAdmissionError";
     this.code = code;
+    this.responsibility = responsibility;
+    this.error = Object.freeze({ code, message, responsibility, retryability: "no" });
   }
 };
 var bad = (path, detail) => {
@@ -5548,15 +5628,15 @@ function admitAuthoredDescription(value, bindings) {
 var codec = new DefaultValueCodec();
 function validateAuthoredTopologyGrant(description, channelId, capabilities) {
   for (const handler of description.handlers ?? []) {
-    if (handler.event.channelId !== channelId) throw new AuthoredAdmissionError("authored.handler.channel-unavailable", "host has not granted handler channel " + handler.event.channelId);
+    if (handler.event.channelId !== channelId) throw new AuthoredAdmissionError("authored.handler.channel-unavailable", "host has not granted handler channel " + handler.event.channelId, "host");
     for (const requirement of handler.requires) if (!capabilities[requirement]?.available)
-      throw new AuthoredAdmissionError("authored.handler.capability-unavailable", "handler " + handler.id + " requires " + requirement);
+      throw new AuthoredAdmissionError("authored.handler.capability-unavailable", "handler " + handler.id + " requires " + requirement, "host");
   }
 }
-function authoredPublicValue(value, schema) {
+function authoredPublicValue(value, schema, responsibility = "definition") {
   activeNativeScratch()?.node();
   const fail5 = (message) => {
-    throw new AuthoredAdmissionError("authored.value.invalid", message);
+    throw new AuthoredAdmissionError("authored.value.invalid", message, responsibility);
   };
   let result;
   if (schema.kind === "null") {
@@ -5566,14 +5646,14 @@ function authoredPublicValue(value, schema) {
     if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) fail5("record required");
     const fields2 = schema.fields, entries = nativeEntries(value);
     if (entries.length !== nativeKeys(fields2).length || nativeArray(entries).some(([key]) => !Object.hasOwn(fields2, key))) fail5("record field set differs");
-    result = nativeRecord(nativeArray(entries).map(([key, member2]) => [key, authoredPublicValue(member2, fields2[key])]));
+    result = nativeRecord(nativeArray(entries).map(([key, member2]) => [key, authoredPublicValue(member2, fields2[key], responsibility)]));
   } else if (schema.kind === "array") {
     if (!Array.isArray(value)) fail5("array required");
-    result = nativeArray(value).map((member2) => authoredPublicValue(member2, schema.item));
+    result = nativeArray(value).map((member2) => authoredPublicValue(member2, schema.item, responsibility));
   } else if (schema.kind === "variant") {
     const v = value;
     if (!v || v.kind !== "variant" || typeof v.tag !== "string" || !Object.hasOwn(schema.variants, v.tag) || nativeSort(nativeKeys(v)).join(",") !== "kind,tag,value") fail5("declared tagged variant required");
-    result = { kind: "variant", tag: v.tag, value: authoredPublicValue(v.value, schema.variants[v.tag]) };
+    result = { kind: "variant", tag: v.tag, value: authoredPublicValue(v.value, schema.variants[v.tag], responsibility) };
   } else {
     let internal = value;
     if (schema.kind === "decimal" && (typeof value !== "string" || !/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value) || /^-0(?:\.0+)?$/.test(value))) fail5("exact finite decimal text required");
@@ -5593,17 +5673,17 @@ function authoredPublicValue(value, schema) {
   return result;
 }
 function validateAuthoredArguments(operation, supplied) {
-  if (nativeKeys(supplied).length !== nativeKeys(operation.arguments).length) throw new AuthoredAdmissionError("authored.arguments.invalid", "argument population differs");
+  if (nativeKeys(supplied).length !== nativeKeys(operation.arguments).length) throw new AuthoredAdmissionError("authored.arguments.invalid", "argument population differs", "invocation");
   return Object.freeze(nativeRecord(nativeArray(nativeEntries(operation.arguments)).flatMap(([key, schema]) => {
     const argument = supplied[key];
     if (schema.kind === "byte-source" || schema.kind === "stream-source") {
       if (!argument || argument.kind !== "resource" || typeof argument.id !== "string" || !argument.id.length || argument.id.length > 256)
-        throw new AuthoredAdmissionError("authored.arguments.invalid", "source resource required: " + key);
+        throw new AuthoredAdmissionError("authored.arguments.invalid", "source resource required: " + key, "invocation");
       return [];
     }
-    if (!argument || argument.kind !== "value") throw new AuthoredAdmissionError("authored.arguments.invalid", "value argument required: " + key);
+    if (!argument || argument.kind !== "value") throw new AuthoredAdmissionError("authored.arguments.invalid", "value argument required: " + key, "invocation");
     const internal = decodeAuthoredArgument(argument.value, schema);
-    return [[key, authoredPublicValue(internal, schema)]];
+    return [[key, authoredPublicValue(internal, schema, "invocation")]];
   })));
 }
 function decodeAuthoredArgument(value, schema) {
@@ -5644,6 +5724,7 @@ function errorSnapshot(error) {
   return {
     code: "capture.storage-failed",
     message,
+    responsibility: "host",
     retryability: "no",
     ...error instanceof Error ? {
       platformCause: {
@@ -5891,7 +5972,7 @@ var CaptureWriter = class _CaptureWriter {
       this.#pendingGap.droppedBytes += droppedBytes;
       this.#pendingGap.droppedRecords += 1;
     }
-    this.#notifyLoss({ code: "capture.recorder-overrun", message: "capture queue lost records", retryability: "no" });
+    this.#notifyLoss({ code: "capture.recorder-overrun", message: "capture queue lost records", responsibility: "host", retryability: "no" });
     this.#startDrain();
   }
   #startDrain() {
@@ -6026,7 +6107,7 @@ var CaptureWriter = class _CaptureWriter {
     try {
       this.#onRecordingLoss?.(error);
     } catch (cause) {
-      this.#storageError ??= { code: "capture.loss-observer-failed", message: String(cause), retryability: "no" };
+      this.#storageError ??= { code: "capture.loss-observer-failed", message: String(cause), responsibility: "host", retryability: "no" };
     }
   }
 };
@@ -6202,6 +6283,7 @@ function pdrError(code, message, details) {
   return {
     code,
     message,
+    responsibility: "operation",
     retryability: "no",
     ...details === void 0 ? {} : { details }
   };
@@ -6211,6 +6293,7 @@ function causeError(code, cause) {
   return {
     code,
     message: error.message,
+    responsibility: "host",
     retryability: "unknown",
     platformCause: {
       typeName: error.constructor.name,
@@ -6548,7 +6631,7 @@ var NativeRunway = class {
 // ../../packages/core/src/native-helper.ts
 var bufferMetadataBytes = new CanonicalSizeAccounting().rpcMessageBytes({ id: 0, capacity: 0, usedLength: 0 });
 function nativeFault(code, message) {
-  return Object.assign(new Error(message), { error: { code, message, retryability: "no" } });
+  return Object.assign(new Error(message), { error: { code, message, responsibility: "definition", retryability: "no" } });
 }
 var NativeHelperData = class {
   maximum;
@@ -7265,6 +7348,7 @@ var BoundedIngress = class {
         this.#terminate({ kind: "fault", error: {
           code: "input.retirement.accounting-failed",
           message: "reliable input custody could not be reserved",
+          responsibility: "operation",
           retryability: "no"
         } });
       } catch {
@@ -7481,7 +7565,7 @@ var AuthoredInputRetirementService = class {
 // ../../packages/core/src/retained-bytes.ts
 function boundedBytes(value, maximum = 256) {
   if (!(value instanceof Uint8Array) || value.length > maximum) throw Object.assign(new Error("bounded octets required"), {
-    error: { code: "retained.invalid-effect", message: "bounded octets required", retryability: "no" }
+    error: { code: "retained.invalid-effect", message: "bounded octets required", responsibility: "definition", retryability: "no" }
   });
   activeNativeScratch()?.reserve(8 + value.length);
   activeNativeScratch()?.work(1 + Math.ceil(value.length / 256));
@@ -8025,7 +8109,7 @@ function sourceValueTypes(operation) {
   return nativeRecord(nativeArray(nativeEntries(operation.arguments)).map(([key, type2]) => [key, type2.kind === "byte-source" ? { kind: "bytes", minimumLength: type2.minimumBytes, maximumLength: type2.maximumBytes } : type2.kind === "stream-source" ? { kind: "string", maximumLength: 128 } : type2]));
 }
 function refuse2(message) {
-  throw Object.assign(new Error(message), { error: { code: "authored.source.invalid", message, retryability: "no" } });
+  throw Object.assign(new Error(message), { error: { code: "authored.source.invalid", message, responsibility: "invocation", retryability: "no" } });
 }
 async function materializeSourceArguments(operation, supplied, values, context) {
   const native = (run) => context.native ? context.native(run) : run();
@@ -8155,7 +8239,7 @@ async function materializeSourceArguments(operation, supplied, values, context) 
 
 // ../../packages/core/src/streaming-source.ts
 function requireSource(ok2, message, code = "authored.source.invalid") {
-  if (!ok2) throw Object.assign(new Error(message), { error: { code, message, retryability: "no" } });
+  if (!ok2) throw Object.assign(new Error(message), { error: { code, message, responsibility: "invocation", retryability: "no" } });
 }
 var WINDOW = 65536;
 var StreamingSource = class _StreamingSource {
@@ -8431,8 +8515,8 @@ async function openStreamingSources(op, supplied, values, c) {
 }
 
 // ../../packages/core/src/channel-group.ts
-function refused(code, message, details) {
-  return Object.assign(new Error(message), { error: { code, message, retryability: "no", ...details ? { details } : {} } });
+function refused(code, message, details, responsibility = "operation") {
+  return Object.assign(new Error(message), { error: { code, message, responsibility, retryability: "no", ...details ? { details } : {} } });
 }
 var ChannelGroup = class _ChannelGroup {
   inputs;
@@ -8452,7 +8536,7 @@ var ChannelGroup = class _ChannelGroup {
       live();
       const id = roles[role];
       if (typeof id !== "string" || !/^[a-zA-Z][a-zA-Z0-9_.-]{0,95}$/.test(id))
-        throw refused("retained.channel-unavailable", "invalid channel for role " + role);
+        throw refused("retained.channel-unavailable", "invalid channel for role " + role, void 0, "definition");
       let channel;
       for (const candidate of connection.channels) {
         iteration();
@@ -8464,7 +8548,7 @@ var ChannelGroup = class _ChannelGroup {
       if (!channel) throw refused("retained.channel-unavailable", "role " + role + " channel " + id + " is unavailable");
       const direction = role === "request" ? "out" : "in";
       if (channel.direction !== direction && channel.direction !== "duplex")
-        throw refused("retained.channel-direction", "role " + role + " channel " + id + " has no " + (direction === "in" ? "input" : "output") + " endpoint");
+        throw refused("retained.channel-direction", "role " + role + " channel " + id + " has no " + (direction === "in" ? "input" : "output") + " endpoint", void 0, "definition");
       if (!selected.includes(channel)) selected.push(channel);
     }
     const acquired = [];
@@ -8570,10 +8654,11 @@ function nativeList(values) {
   }
   return nativeArray(result);
 }
-function fault(code, message, details) {
+function fault(code, message, details, responsibility = "operation") {
   return Object.assign(new Error(message), { error: {
     code,
     message,
+    responsibility,
     retryability: "no",
     ...details === void 0 ? {} : { details }
   } });
@@ -8582,8 +8667,9 @@ function errorValue(cause) {
   if (typeof cause === "object" && cause !== null && "error" in cause) return cause.error;
   if (cause instanceof Error && cause.name === "TransferCheckpointError" && "diagnostic" in cause) {
     const d = cause.diagnostic;
+    const responsibility = "responsibility" in cause ? cause.responsibility : "operation";
     if (typeof d.code === "string" && d.code.startsWith("transfer.") && d.code.length <= 128 && typeof d.message === "string")
-      return { code: d.code, message: d.message.slice(0, 512), retryability: "no" };
+      return { code: d.code, message: d.message.slice(0, 512), responsibility, retryability: "no" };
   }
   if (cause instanceof Error && "code" in cause && typeof cause.code === "string") {
     const bounded = [
@@ -8596,7 +8682,7 @@ function errorValue(cause) {
     ].includes(cause.code);
     const vm = cause;
     const vmFailure = typeof vm.vmStatus === "number" && Number.isSafeInteger(vm.vmStatus) && vm.vmStatus < 0 && (vm.phase === "admission" || vm.phase === "dispatch");
-    if (bounded || vmFailure && cause.code.startsWith("lua-vm.environment.")) {
+    if (bounded && cause instanceof LuaResourceError || vmFailure && cause.code.startsWith("lua-vm.environment.")) {
       const details = {};
       if (typeof vm.fuelConsumed === "number" && Number.isSafeInteger(vm.fuelConsumed) && vm.fuelConsumed >= 0)
         details.fuelConsumed = vm.fuelConsumed;
@@ -8618,6 +8704,7 @@ function errorValue(cause) {
       return {
         code: cause.code,
         message: cause.message,
+        responsibility: "definition",
         retryability: bounded ? "no" : "unknown",
         ...Object.keys(details).length ? { details } : {}
       };
@@ -8628,6 +8715,7 @@ function errorValue(cause) {
     return {
       code: "lua-vm.invocation.program-failure",
       message: "Authored operation failed: " + failure4.programFailureName,
+      responsibility: "definition",
       retryability: "unknown",
       details: { name: failure4.programFailureName, details: failure4.programFailureDetails }
     };
@@ -9153,7 +9241,7 @@ var RetainedSessionRpcServer = class {
       }
       if (this.#rawTerminal === terminal) await this.#closeRawTerminal(
         terminal.id,
-        { code: "retained.connection-ended", message: "raw-terminal input ended", retryability: "after-reconnect" }
+        { code: "retained.connection-ended", message: "raw-terminal input ended", responsibility: "operation", retryability: "after-reconnect" }
       );
     } catch (cause) {
       if (this.#rawTerminal === terminal) await this.#closeRawTerminal(terminal.id, errorValue(cause));
@@ -9268,7 +9356,7 @@ var RetainedSessionRpcServer = class {
           if (!declaration?.transfer) throw fault("transfer.resume.definition-mismatch", "operation has no resume binding");
           declaration = { ...declaration, binding: declaration.transfer.resumeBinding };
         }
-        if (this.#options.description && !declaration) throw fault("authored.operation.unknown", "operation is not admitted");
+        if (this.#options.description && !declaration) throw fault("authored.operation.unknown", "operation is not admitted", void 0, "invocation");
         let args;
         if (declaration) {
           if (nativeArray(declaration.locks).some((lock) => this.#lockOwners.has(lock) || nativeList(this.#lockWaiters.values()).some((wait) => wait.locks.includes(lock))))
@@ -9297,7 +9385,7 @@ var RetainedSessionRpcServer = class {
           if (declaration.cleanup && !this.#options.execution.startOperation)
             throw fault("authored.cleanup.unavailable", "cleanup requires an admitted binding adapter", { started: false });
           if (declaration.cleanup && (this.#tasks + this.#helperTasks + 2 > 64 || this.#timerCount() >= this.#maximumTimers))
-            throw fault("authored.cleanup.capacity", "cleanup task and deadline must be withheld before operation start");
+            throw fault("authored.cleanup.capacity", "cleanup task and deadline must be withheld before operation start", void 0, "host");
           if (declaration.cleanup && (declaration.cleanup.maximumWork + preparationWork + this.#terminalBaseWork >= this.#maximumWork || declaration.cleanup.maximumWork <= this.#terminalBaseWork))
             throw fault("authored.cleanup.budget", "ordinary and cleanup terminal partitions do not fit the operation grant");
           const streamedOutput = (declaration.result.kind === "file" || declaration.result.kind === "resource") && declaration.result.streamed;
@@ -9310,10 +9398,10 @@ var RetainedSessionRpcServer = class {
         }
         const resources = /* @__PURE__ */ new Set();
         const outputResult = declaration?.result.kind === "file" || declaration?.result.kind === "resource";
-        if (outputResult !== (request2.resultDestinationId !== void 0)) throw fault("authored.result.destination", "only a declared output result requires a host destination ID");
+        if (outputResult !== (request2.resultDestinationId !== void 0)) throw fault("authored.result.destination", "only a declared output result requires a host destination ID", void 0, "invocation");
         if (request2.resultDestinationId !== void 0) {
-          if (typeof request2.resultDestinationId !== "string" || !request2.resultDestinationId.length || request2.resultDestinationId.length > 256) throw fault("authored.result.destination", "bounded destination ID required");
-          if (nativeList(this.#activations.values()).some((a) => a.live && a.resources.has(request2.resultDestinationId))) throw fault("authored.result.destination-busy", "destination already delegated");
+          if (typeof request2.resultDestinationId !== "string" || !request2.resultDestinationId.length || request2.resultDestinationId.length > 256) throw fault("authored.result.destination", "bounded destination ID required", void 0, "invocation");
+          if (nativeList(this.#activations.values()).some((a) => a.live && a.resources.has(request2.resultDestinationId))) throw fault("authored.result.destination-busy", "destination already delegated", void 0, "host");
           resources.add(request2.resultDestinationId);
         }
         for (const [name2, supplied] of nativeEntries(declaration ? {} : request2.arguments)) {
@@ -10450,7 +10538,7 @@ var RetainedSessionRpcServer = class {
         if (activation.acceptanceDone && !["result", "reschedule"].includes(kind))
           throw fault("retained.handoff-control", "acceptance supports only a bounded decision and cooperative rescheduling");
         if (kind === "result") {
-          if (activation.transfer && !activation.transfer.receipt) throw fault("authored.transfer.incomplete", "operation cannot succeed before common transfer verification");
+          if (activation.transfer && !activation.transfer.receipt) throw fault("authored.transfer.incomplete", "operation cannot succeed before common transfer verification", void 0, "definition");
           let value;
           if (!activation.declaration) {
             this.#finish(activation, "completed", this.#native(activation, () => text(request2.value)));
@@ -10504,7 +10592,7 @@ var RetainedSessionRpcServer = class {
               effects: nativeList(activation.effects.values()).map((effect) => ({ ...effect })),
               effectsEvicted: activation.effectsEvicted ?? 0,
               operation: activation.declaration.id
-            });
+            }, "definition");
           }
           for (const stream of activation.streams?.values() ?? []) await stream.release();
           this.#live(activation);
@@ -10536,6 +10624,7 @@ var RetainedSessionRpcServer = class {
           this.#finish(activation, "resume-required", null, {
             code: "authored.transfer.resume-required",
             message: "Authored transfer is not finished and requires resume",
+            responsibility: "operation",
             retryability: "after-recovery"
           });
           return;
@@ -11334,7 +11423,7 @@ var RetainedSessionRpcServer = class {
         try {
           this.#dropDeadline(deadline, "expired");
         } finally {
-          this.#cancel(activation.id, { code: "retained.cancelled", message: "authored operation deadline expired", retryability: "unknown", details: { cause } });
+          this.#cancel(activation.id, { code: "retained.cancelled", message: "authored operation deadline expired", responsibility: "operation", retryability: "unknown", details: { cause } });
         }
       }
     });
@@ -12325,7 +12414,7 @@ var RetainedSessionRpcServer = class {
         });
         if (response.settled === "failed") throw Object.assign(new Error(response.error?.message ?? "control failed"), {
           error: {
-            ...response.error ?? { code: "retained.control-failed", message: "platform control failed", retryability: "unknown" },
+            ...response.error ?? { code: "retained.control-failed", message: "platform control failed", responsibility: "operation", retryability: "unknown" },
             details: { effectId: effect.id, submitted: true, ...response.error?.details === void 0 ? {} : { cause: response.error.details } }
           }
         });
@@ -12501,7 +12590,7 @@ var RetainedSessionRpcServer = class {
         this.#cleanupTimers--;
         child.terminal?.close();
         error = {
-          ...error ?? { code: "authored.cleanup.skipped", message: "cleanup unavailable in unsafe execution", retryability: "no" },
+          ...error ?? { code: "authored.cleanup.skipped", message: "cleanup unavailable in unsafe execution", responsibility: "definition", retryability: "no" },
           details: { ...error?.details && typeof error.details === "object" && !Array.isArray(error.details) ? error.details : {}, cleanup: { outcome: "skipped" } }
         };
         if (outcome === "completed") outcome = "failed";
@@ -12538,7 +12627,7 @@ var RetainedSessionRpcServer = class {
             } } : {}
           };
           let terminalError = error;
-          if (cleanupError && !terminalError) terminalError = { code: "authored.cleanup.failed", message: "ordinary return did not complete protocol restoration", retryability: "no" };
+          if (cleanupError && !terminalError) terminalError = { code: "authored.cleanup.failed", message: "ordinary return did not complete protocol restoration", responsibility: "definition", retryability: "no" };
           if (terminalError) terminalError = { ...terminalError, details: {
             ...terminalError.details && typeof terminalError.details === "object" && !Array.isArray(terminalError.details) ? terminalError.details : {},
             cleanup
@@ -12557,7 +12646,7 @@ var RetainedSessionRpcServer = class {
         };
         const c = activation.declaration.cleanup;
         child.cleanupTimer = this.#options.clock.timer(c.maximumMilliseconds, () => {
-          if (child.live) this.#finish(child, "cancelled", null, { code: "authored.cleanup.timeout", message: "prepaid cleanup wall bound expired", retryability: "no" });
+          if (child.live) this.#finish(child, "cancelled", null, { code: "authored.cleanup.timeout", message: "prepaid cleanup wall bound expired", responsibility: "definition", retryability: "no" });
         });
         try {
           this.#native(child, () => this.#stamp());
@@ -12605,7 +12694,7 @@ var RetainedSessionRpcServer = class {
     if (activation.finished) return;
     if (activation.entryDone && this.#options.description?.entry?.handoffTo && !activation.entryHandoff && outcome === "completed") {
       outcome = "failed";
-      error = { code: "authored.entry.handoff-incomplete", message: "entry returned without accepted handoff", retryability: "no" };
+      error = { code: "authored.entry.handoff-incomplete", message: "entry returned without accepted handoff", responsibility: "definition", retryability: "no" };
     }
     activation.finished = true;
     this.#revokeActivation(activation);
@@ -12637,12 +12726,13 @@ var RetainedSessionRpcServer = class {
         error = {
           code: error.code.slice(0, 128),
           message: error.message.slice(0, 512),
+          ...error.responsibility === void 0 ? {} : { responsibility: error.responsibility },
           retryability: "no",
           details: { detailsOmitted: error.details !== void 0, codeTruncated: error.code.length > 128, messageTruncated: error.message.length > 512 }
         };
       }
       this.#stamp();
-      activation.cleanupComplete?.(error ?? (outcome === "completed" ? void 0 : { code: "authored.cleanup.cancelled", message: "cleanup revoked", retryability: "no" }));
+      activation.cleanupComplete?.(error ?? (outcome === "completed" ? void 0 : { code: "authored.cleanup.cancelled", message: "cleanup revoked", responsibility: "operation", retryability: "no" }));
       return;
     }
     if (activation.handler) {
@@ -12654,8 +12744,8 @@ var RetainedSessionRpcServer = class {
           this.#stamp();
         }
       } else this.#stamp();
-      activation.entryDone?.(error ?? (outcome === "completed" ? void 0 : { code: "authored.entry.cancelled", message: "entry revoked", retryability: "no" }));
-      activation.acceptanceDone?.(result, error ?? (outcome === "completed" ? void 0 : { code: "retained.revoked", message: "acceptance revoked", retryability: "no" }));
+      activation.entryDone?.(error ?? (outcome === "completed" ? void 0 : { code: "authored.entry.cancelled", message: "entry revoked", responsibility: "operation", retryability: "no" }));
+      activation.acceptanceDone?.(result, error ?? (outcome === "completed" ? void 0 : { code: "retained.revoked", message: "acceptance revoked", responsibility: "operation", retryability: "no" }));
       if (outcome === "failed" && !activation.entryDone && !activation.acceptanceDone) void this.#disconnect(error);
       return;
     }
@@ -12696,6 +12786,7 @@ var RetainedSessionRpcServer = class {
     this.#finish(activation, "cancelled", null, error ?? {
       code: "retained.cancelled",
       message: "ordinary authority revoked",
+      responsibility: "operation",
       retryability: "no"
     });
     if (activation.delivery) {
@@ -12769,6 +12860,11 @@ var RetainedSessionRpcServer = class {
 };
 
 // ../../packages/core/src/authored-module.ts
+function typedLuaFailure(cause, responsibility) {
+  if (!(cause instanceof LuaResourceError)) return cause;
+  if ("error" in cause) return cause;
+  return Object.assign(cause, { error: { code: cause.code, message: cause.message, responsibility, retryability: "no" } });
+}
 function materialize2(v) {
   activeNativeScratch()?.node();
   if (Array.isArray(v)) return nativeArray(v).map(materialize2);
@@ -12796,7 +12892,12 @@ async function authoredDigest(domain, bytes) {
   return nativeArray([...new Uint8Array(await crypto.subtle.digest("SHA-256", framed))]).map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 async function admitAuthoredModule(input, artifact, options = {}) {
-  const policy = resolveRetainedLuaPolicy(options.luaResourcePolicy);
+  let policy;
+  try {
+    policy = resolveRetainedLuaPolicy(options.luaResourcePolicy);
+  } catch (cause) {
+    throw typedLuaFailure(cause, "host");
+  }
   let population2;
   try {
     population2 = input instanceof Uint8Array ? await readPdpkg(input) : await readAuthoredDirectorySnapshot(input);
@@ -12809,12 +12910,12 @@ async function admitAuthoredModule(input, artifact, options = {}) {
   const snapshot = await verifyLuaSourceSet(population2);
   const vmBytes = artifact.slice();
   if (options.expectedSourceSetSha256 !== void 0 && options.expectedSourceSetSha256 !== snapshot.identity.hex)
-    throw new AuthoredAdmissionError("authored.expectation.mismatch", "source-set expectation not reached");
+    throw new AuthoredAdmissionError("authored.expectation.mismatch", "source-set expectation not reached", "invocation");
   const first = await openRetainedLua(snapshot, vmBytes, policy).catch((cause) => {
     const failure4 = cause;
     if (failure4?.code === "lua-vm.environment.program" && failure4.phase === "admission")
       throw sourceMemberAdmissionError("device.lua", "initialization-failed");
-    throw cause;
+    throw typedLuaFailure(cause, "definition");
   });
   try {
     const { description, canonical, bindings } = first.admission(() => {
@@ -12868,7 +12969,7 @@ async function admitAuthoredModule(input, artifact, options = {}) {
   }
 }
 async function createAuthoredSession(input, artifact, options, expectation) {
-  if (nativeKeys(options.helpers).length) throw new AuthoredAdmissionError("authored.helpers.unavailable", "participating native helpers require an identity inventory before use");
+  if (nativeKeys(options.helpers).length) throw new AuthoredAdmissionError("authored.helpers.unavailable", "participating native helpers require an identity inventory before use", "host");
   const module = await admitAuthoredModule(input, artifact, {
     ...expectation === void 0 ? {} : { expectedSourceSetSha256: expectation },
     ...options.luaResourcePolicy === void 0 ? {} : { luaResourcePolicy: options.luaResourcePolicy }
@@ -12891,10 +12992,10 @@ async function createAuthoredSession(input, artifact, options, expectation) {
       })
     ) })).pending;
     return execution.admission(() => {
-      if (!module.description.modes.includes(options.modeId)) throw new AuthoredAdmissionError("authored.mode.unavailable", `host selected unavailable mode ${JSON.stringify(options.modeId) ?? "<missing>"}`);
-      if (!module.description.profiles.includes(options.profileId)) throw new AuthoredAdmissionError("authored.profile.unavailable", `host selected unavailable profile ${JSON.stringify(options.profileId) ?? "<missing>"}`);
+      if (!module.description.modes.includes(options.modeId)) throw new AuthoredAdmissionError("authored.mode.unavailable", `host selected unavailable mode ${JSON.stringify(options.modeId) ?? "<missing>"}`, "invocation");
+      if (!module.description.profiles.includes(options.profileId)) throw new AuthoredAdmissionError("authored.profile.unavailable", `host selected unavailable profile ${JSON.stringify(options.profileId) ?? "<missing>"}`, "invocation");
       const request2 = module.description.connectionProfiles?.[options.profileId];
-      if (request2 && !request2.modes.includes(options.modeId)) throw new AuthoredAdmissionError("authored.profile.unavailable", "profile does not allow the host-selected mode");
+      if (request2 && !request2.modes.includes(options.modeId)) throw new AuthoredAdmissionError("authored.profile.unavailable", "profile does not allow the host-selected mode", "invocation");
       const scheduled = Boolean(module.description.handlers?.length);
       const plans = pollPlans(module.description);
       const pollPolicy = grantPollPlans(plans, options.pollPolicy === void 0 ? DEFAULT_AUTHORED_POLL_POLICY : options.pollPolicy);
@@ -12926,10 +13027,10 @@ async function createAuthoredSession(input, artifact, options, expectation) {
         activeNativeScratch()?.iteration();
         const op = nativeArray(module.description.operations).find((op2) => op2.id === plan.operation);
         if (!op.availability.profiles.includes(options.profileId) || nativeArray(op.requires).some((r) => !capabilities[r]?.available))
-          throw new AuthoredAdmissionError("authored.poll.unavailable", "host cannot execute the requested poll target");
+          throw new AuthoredAdmissionError("authored.poll.unavailable", "host cannot execute the requested poll target", "host");
       }
       if (scheduled && nativeArray(module.description.entry?.requires)?.some((requirement) => !(module.description.entry?.handoffTo && ["channel.read", "channel.write"].includes(requirement)) && !capabilities[requirement]?.available))
-        throw new AuthoredAdmissionError("authored.capability.unavailable", "entry requires authority owned by the input handler or unavailable on this host");
+        throw new AuthoredAdmissionError("authored.capability.unavailable", "entry requires authority owned by the input handler or unavailable on this host", "host");
       return { module, server: new RetainedSessionRpcServer({
         ...options,
         channelRoles: module.description.channelRoles?.[options.profileId],
@@ -12952,10 +13053,12 @@ async function createAuthoredSession(input, artifact, options, expectation) {
 
 // ../../packages/transfer-runtime/src/transfer-checkpoint.ts
 var TransferCheckpointError = class extends Error {
+  responsibility;
   diagnostic;
-  constructor(diagnostic) {
+  constructor(diagnostic, responsibility = "operation") {
     super(`${diagnostic.code}: ${diagnostic.message}`);
     this.name = "TransferCheckpointError";
+    this.responsibility = responsibility;
     this.diagnostic = Object.freeze({ ...diagnostic });
   }
 };
@@ -12965,7 +13068,7 @@ function checkpointError(code, declarationPath, message, details) {
     declarationPath,
     message,
     ...details === void 0 ? {} : { details }
-  });
+  }, "host");
 }
 function lowercaseDigest(value, path) {
   if (!/^[0-9a-f]+$/u.test(value) || value.length % 2 !== 0) {
@@ -13296,10 +13399,11 @@ var ChannelLeaseConflictError = class extends Error {
 // ../../packages/transport-browser-serial/src/index.ts
 var DEFAULT_MAXIMUM_BUFFERED_BYTES = 4 * 1024 * 1024;
 var DEFAULT_MAXIMUM_DIAGNOSTIC_BYTES = 2 * 1024 * 1024;
-function pdrError2(code, message, retryability, platformCause) {
+function pdrError2(code, message, retryability, platformCause, responsibility = "operation") {
   return {
     code,
     message,
+    responsibility,
     retryability,
     ...platformCause === void 0 ? {} : { platformCause }
   };
@@ -13316,7 +13420,8 @@ var BrowserSerialPortHeldError = class extends Error {
       "transport.port-held",
       "serial port is held by another browser tab or context",
       "after-recovery",
-      causeSnapshot(cause)
+      causeSnapshot(cause),
+      "host"
     );
     super(error.message);
     this.name = "BrowserSerialPortHeldError";
@@ -13330,7 +13435,8 @@ var BrowserSerialOpenError = class extends Error {
       "transport.open-failed",
       `could not open serial port: ${cause instanceof Error ? cause.message : String(cause)}; Web Serial did not report whether another process holds it`,
       "unknown",
-      causeSnapshot(cause)
+      causeSnapshot(cause),
+      "host"
     );
     super(error.message);
     this.name = "BrowserSerialOpenError";
@@ -13904,7 +14010,7 @@ var WEB_USB_BULK_INPUT_CONCURRENCY = 8;
 var BrowserUsbOpenError = class extends Error {
   error;
   constructor(code, message, cause) {
-    const error = pdrError3(code, message, "unknown", cause);
+    const error = pdrError3(code, message, "unknown", cause, "host");
     super(error.message);
     this.name = "BrowserUsbOpenError";
     this.error = error;
@@ -14511,11 +14617,12 @@ function snapshotUsbCause(cause) {
     typeof cause === "object" && cause !== null ? cause : String(cause)
   );
 }
-function pdrError3(code, message, retryability, cause) {
+function pdrError3(code, message, retryability, cause, responsibility = "operation") {
   const platformCause = cause === void 0 ? void 0 : snapshotUsbCause(cause);
   return {
     code,
     message,
+    responsibility,
     retryability,
     ...platformCause === void 0 ? {} : { platformCause }
   };
@@ -14601,7 +14708,7 @@ var BrowserSessionWorkerHost = class {
       maximumCaptureInMemoryBytes: DEFAULT_HOST_RESOURCE_LIMITS.maximumCaptureInMemoryBytes
     };
     if (!Number.isSafeInteger(this.#captureLimits.maximumCaptureQueueBytes) || this.#captureLimits.maximumCaptureQueueBytes <= 0 || !Number.isSafeInteger(this.#captureLimits.maximumCaptureInMemoryBytes) || this.#captureLimits.maximumCaptureInMemoryBytes <= this.#captureLimits.maximumCaptureQueueBytes) {
-      throw new RangeError("invalid browser capture limits");
+      throw workerError("web.capture.limits-invalid", "invalid browser capture limits", "host");
     }
   }
   get events() {
@@ -14611,13 +14718,21 @@ var BrowserSessionWorkerHost = class {
     return 0;
   }
   async admit(deviceBytes) {
-    if (this.#module !== void 0) throw new Error("replace the authored session before loading another package");
+    if (this.#module !== void 0) throw workerError(
+      "web.package.session-active",
+      "replace the authored session before loading another package",
+      "invocation"
+    );
     const artifact = this.#authoredArtifact ?? (await Promise.resolve().then(() => __toESM(require_protodriver_retained_v2(), 1))).default;
     const archive = Uint8Array.from(deviceBytes);
     const module = await admitAuthoredModule(archive, artifact);
     const grant = await this.#authoredAcquisition?.(module.description);
     if (grant !== void 0) {
-      if (!this.#resourceBroker || !this.#captureDestinationAdapter) throw new Error("authored product services required");
+      if (!this.#resourceBroker || !this.#captureDestinationAdapter) throw workerError(
+        "web.services.required",
+        "authored product services required",
+        "host"
+      );
       const created = await createAuthoredSession(archive, artifact, {
         ...grant,
         platform: "web",
@@ -14669,7 +14784,7 @@ var BrowserSessionWorkerHost = class {
     try {
       if (request2.kind === "attach-client") {
         if (!this.#clients.has(request2.params.clientId) && this.#clients.size >= DEFAULT_HOST_RESOURCE_LIMITS.maximumClientsPerSession) {
-          throw new Error("maximum clients per session exceeded");
+          throw workerError("web.clients.limit", "maximum clients per session exceeded", "host");
         }
         this.#clients.add(request2.params.clientId);
         this.#attachRequests.set(request2.params.clientId, request2);
@@ -14681,13 +14796,21 @@ var BrowserSessionWorkerHost = class {
           return ok(request2, await this.#resolveCandidates(request2.params.request));
         case "connect": {
           if (this.#module?.description.connectionProfiles === void 0) {
-            throw new Error("authored.acquisition.required: package admitted; execution needs an explicit host-supplied connection grant");
+            throw workerError(
+              "authored.acquisition.required",
+              "package admitted; execution needs an explicit host-supplied connection grant",
+              "host"
+            );
           }
           const server = await this.#createDeferredServer(request2.params.request);
           return server.handle(request2);
         }
         case "start-capture":
-          if (this.#pendingCapture !== void 0) throw new Error("a capture is already awaiting authored session construction");
+          if (this.#pendingCapture !== void 0) throw workerError(
+            "web.capture.pending",
+            "a capture is already awaiting authored session construction",
+            "invocation"
+          );
           return new Promise((settle) => {
             this.#pendingCapture = { request: request2, settle };
           });
@@ -14706,7 +14829,11 @@ var BrowserSessionWorkerHost = class {
         case "get-snapshot":
           return ok(request2, this.#snapshot());
         default:
-          throw new Error("authored.acquisition.required: select an admitted mode, profile and authorized candidate before execution");
+          throw workerError(
+            "authored.acquisition.required",
+            "select an admitted mode, profile and authorized candidate before execution",
+            "invocation"
+          );
       }
     } catch (cause) {
       return failure3(request2, cause);
@@ -14716,16 +14843,16 @@ var BrowserSessionWorkerHost = class {
     const module = this.#requireModule();
     const modeId = request2.mode ?? module.description.modes[0];
     if (modeId === void 0 || !module.description.modes.includes(modeId)) {
-      throw workerError("acquisition.mode-mismatch", "mode selection is required");
+      throw workerError("acquisition.mode-mismatch", "mode selection is required", "invocation");
     }
     const declared = Object.entries(module.description.connectionProfiles ?? {}).filter(([, profile]) => profile.modes.includes(modeId));
     if (declared.length === 0 && request2.profile === void 0) return Object.freeze([]);
     const profiles = request2.profile === void 0 ? declared : declared.filter(([profileId]) => profileId === request2.profile);
     if (request2.profile === void 0 && profiles.length !== 1) {
-      throw workerError("acquisition.profile-required", `mode ${modeId} requires an admitted profile selection`);
+      throw workerError("acquisition.profile-required", `mode ${modeId} requires an admitted profile selection`, "invocation");
     }
     if (request2.profile !== void 0 && profiles.length === 0) {
-      throw workerError("acquisition.profile-mismatch", `profile ${request2.profile} is not admitted for ${modeId}`);
+      throw workerError("acquisition.profile-mismatch", `profile ${request2.profile} is not admitted for ${modeId}`, "invocation");
     }
     const entries = (await Promise.all(profiles.map(([profileId, profile]) => this.#candidateEntries(modeId, { ...profile, id: profileId }, request2.grant)))).flat();
     const candidates = entries.map(({ candidate }, index) => Object.freeze({
@@ -14745,12 +14872,12 @@ var BrowserSessionWorkerHost = class {
   async #candidateEntries(modeId, profile, grant) {
     const filters = grant === void 0 ? profile.acquisitionFilters : grant.matchedFilters.map((index) => {
       if (!Number.isSafeInteger(index) || index < 0 || index >= profile.acquisitionFilters.length) {
-        throw workerError("acquisition.grant-filter-mismatch", `grant filter ${index} is outside admitted profile ${profile.id}`);
+        throw workerError("acquisition.grant-filter-mismatch", `grant filter ${index} is outside admitted profile ${profile.id}`, "host");
       }
       return profile.acquisitionFilters[index];
     });
     if (grant !== void 0 && filters.length === 0) {
-      throw workerError("acquisition.grant-filter-mismatch", `grant does not cover admitted profile ${profile.id}`);
+      throw workerError("acquisition.grant-filter-mismatch", `grant does not cover admitted profile ${profile.id}`, "host");
     }
     const authorized = { ...profile, acquisitionFilters: filters };
     return isBrowserSerialProfile(authorized) ? this.#serialCandidates(modeId, authorized) : this.#usbCandidates(modeId, authorized);
@@ -14825,16 +14952,16 @@ var BrowserSessionWorkerHost = class {
   }
   async #createDeferredServer(request2) {
     if (this.#authoredAcquisitionBinding?.kind !== "permission-broker-v1") {
-      throw workerError("authored.acquisition.stock-unbound", "ordinary authored acquisition requires the clone-safe bootstrap binding");
+      throw workerError("authored.acquisition.stock-unbound", "ordinary authored acquisition requires the clone-safe bootstrap binding", "host");
     }
     const module = this.#requireModule();
     const archive = this.#archive;
     const artifact = this.#authoredArtifact ?? (await Promise.resolve().then(() => __toESM(require_protodriver_retained_v2(), 1))).default;
     if (request2.mode === void 0 || request2.profile === void 0 || request2.candidateId === void 0 || request2.grant === void 0) {
-      throw workerError("authored.acquisition.selection-required", "grant, mode, profile and candidate are required before authored session construction");
+      throw workerError("authored.acquisition.selection-required", "grant, mode, profile and candidate are required before authored session construction", "invocation");
     }
     if (!module.description.modes.includes(request2.mode)) {
-      throw workerError("authored.acquisition.mode-mismatch", `mode ${request2.mode} is not admitted`);
+      throw workerError("authored.acquisition.mode-mismatch", `mode ${request2.mode} is not admitted`, "invocation");
     }
     const profile = module.description.connectionProfiles?.[request2.profile];
     if (profile === void 0 || !profile.modes.includes(request2.mode)) {
@@ -14843,12 +14970,16 @@ var BrowserSessionWorkerHost = class {
     await this.#resolveCandidates({ mode: request2.mode, profile: request2.profile, grant: request2.grant });
     const selected = this.#candidates.get(request2.candidateId);
     if (selected === void 0 || selected.modeId !== request2.mode || selected.profileId !== request2.profile) {
-      throw workerError("authored.acquisition.candidate-mismatch", `candidate ${request2.candidateId} is not authorized for ${request2.mode}/${request2.profile}`);
+      throw workerError("authored.acquisition.candidate-mismatch", `candidate ${request2.candidateId} is not authorized for ${request2.mode}/${request2.profile}`, "invocation");
     }
     if (this.#candidateGrants.get(request2.candidateId) !== request2.grant.grantId) {
-      throw workerError("authored.acquisition.grant-mismatch", `candidate ${request2.candidateId} was not resolved under grant ${request2.grant.grantId}`);
+      throw workerError("authored.acquisition.grant-mismatch", `candidate ${request2.candidateId} was not resolved under grant ${request2.grant.grantId}`, "host");
     }
-    if (!this.#resourceBroker || !this.#captureDestinationAdapter) throw new Error("authored product services required");
+    if (!this.#resourceBroker || !this.#captureDestinationAdapter) throw workerError(
+      "web.services.required",
+      "authored product services required",
+      "host"
+    );
     const pollPolicy = grantRequiredPollPlans(
       pollPlans(module.description),
       DEFAULT_AUTHORED_POLL_POLICY,
@@ -14877,7 +15008,7 @@ var BrowserSessionWorkerHost = class {
       });
       for (const replay of [...this.#attachRequests.values(), ...this.#subscriptionRequests.values()]) {
         const response = await created.server.handle(replay);
-        if (response.kind === "error") throw new Error(`authored RPC replay failed: ${response.error.message}`);
+        if (response.kind === "error") throw Object.assign(new Error(response.error.message), { error: response.error });
       }
       if (pendingCapture !== void 0) {
         const response = await created.server.handle(pendingCapture.request);
@@ -14931,10 +15062,18 @@ var BrowserSessionWorkerHost = class {
     };
   }
   #requireAttached() {
-    if (this.#clients.size === 0) throw new Error("attach-client is required before session calls");
+    if (this.#clients.size === 0) throw workerError(
+      "web.client.required",
+      "attach-client is required before session calls",
+      "invocation"
+    );
   }
   #requireModule() {
-    if (this.#module === void 0 || this.#loaded === void 0) throw new Error("no authored package is loaded in the worker");
+    if (this.#module === void 0 || this.#loaded === void 0) throw workerError(
+      "web.package.required",
+      "no authored package is loaded in the worker",
+      "invocation"
+    );
     return this.#module;
   }
 };
@@ -14955,20 +15094,22 @@ function hexId(value) {
 function isBrowserSerialProfile(profile) {
   return profile.transport.kind === "serial";
 }
-function workerError(code, message, cause) {
+function workerError(code, message, responsibility, cause) {
   const error = {
     code,
     message,
     retryability: "no",
+    ...responsibility === void 0 ? {} : { responsibility },
     ...cause === void 0 ? {} : { platformCause: snapshotCause(cause) }
   };
-  return Object.assign(new Error(message), { error });
+  return Object.assign(new Error(`${code}: ${message}`), { error });
 }
 function serializeWorkerError(cause) {
   if (cause instanceof TransferCheckpointError) {
     return {
       code: cause.diagnostic.code,
       message: cause.diagnostic.message,
+      responsibility: cause.responsibility,
       retryability: "no",
       details: cause.diagnostic
     };
@@ -14979,10 +15120,12 @@ function serializeWorkerError(cause) {
     if (typeof diagnostic === "object" && diagnostic !== null && typeof diagnostic.code === "string" && typeof diagnostic.message === "string") {
       const value = diagnostic;
       const retryability = value.retryability === "no" || value.retryability === "after-reconnect" || value.retryability === "after-recovery" || value.retryability === "unknown" ? value.retryability : "no";
+      const responsibility = "responsibility" in cause ? cause.responsibility : void 0;
       return {
         code: value.code,
         message: value.message,
         retryability,
+        ...responsibility === void 0 ? {} : { responsibility },
         details: "details" in diagnostic ? diagnostic.details : diagnostic
       };
     }
