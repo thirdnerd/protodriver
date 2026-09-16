@@ -11,6 +11,7 @@ import { RealClock } from "../../../packages/core/src/clock.ts";
 import { executeResumedHostToDeviceTransfer } from "../../../packages/transfer-runtime/src/transfer-checkpoint.ts";
 import { NodeTransferCheckpointStore } from "../src/transfer-checkpoints.ts";
 import { withHangDetector } from "../../../test-support/fixtures/hang-detector.mjs";
+import { fileURLToPath } from "node:url";
 import {
   checkpoint,
   CHECKPOINT_CHUNK_BYTES,
@@ -74,7 +75,7 @@ test("an in-progress live lock is held even while its owner record is incomplete
   const lockEvent = waitForFileEvent(lockPath);
   t.after(lockEvent.close);
   const child = spawn(process.execPath, [
-    new URL("./fixtures/checkpoint-lock-race-child.mjs", import.meta.url).pathname,
+    fileURLToPath(new URL("./fixtures/checkpoint-lock-race-child.mjs", import.meta.url)),
     directory,
     checkpoint().id,
     String(64 * 1024 * 1024),

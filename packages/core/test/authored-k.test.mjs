@@ -99,7 +99,7 @@ test("entry effects wait for admission and entry static refusal precedes acquisi
   const h = await harness(t); assert.deepEqual(h.native, []);
   await h.client.connect({ mode: "main" }); assert.deepEqual(h.native.map(e => e.value ?? e.kind), ["native-open", "ENTRY"]);
   assert.equal((await h.client.getSnapshot()).stateCells.boot.value, true);
-  const refused = await harness(t, source.replace('{"channel.write"}', '{"not-granted"}'));
+  const refused = await harness(t, source.replace('{"channel.write"}', '{"usb.control"}'));
   await assert.rejects(refused.client.connect({ mode: "main" }), e => e.error?.code === "authored.capability.unavailable");
   assert.deepEqual(refused.native, []);
 });

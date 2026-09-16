@@ -7,6 +7,7 @@ import { DEFAULT_AUTHORED_POLL_POLICY, grantPollPlans, pollPlans } from "./autho
 import { NativeHelperData } from "./native-helper.ts";
 import { DEFAULT_HOST_RESOURCE_LIMITS } from "@protodriver/contracts/limits";
 import { TRANSFER_SOURCE_QUANTUM } from "./authored-transfer.ts";
+import type { AuthoredCapabilityName } from "./authored-capabilities.ts";
 
 /** Trusted host composition only. Packages cannot supply connection factories. */
 export type AuthoredHostGrant = Omit<Parameters<typeof createAuthoredSession>[2],
@@ -141,7 +142,7 @@ export async function createAuthoredSession(input: Uint8Array | readonly LuaSour
     "transfer.cleanup": { available: options.checkpointStore !== undefined, limitation: "cleanup-only retirement of the operation's existing settled claim" },
     "state.poll": { available: pollPolicy !== null, limitation: JSON.stringify(pollPolicy) },
     "connection.lifecycle": { available: module.description.invalidation !== undefined, limitation: "requires an admitted invalidation handler" },
-  };
+  } satisfies Record<AuthoredCapabilityName, { readonly available: boolean; readonly limitation: string }>;
   validateAuthoredTopologyGrant(module.description, options.channelId, { ...capabilities,
     "channel.input": { available: true, limitation: "one native delivery per external activation" },
     "channel.write": { available: true, limitation: "granted consuming handler channel" } });

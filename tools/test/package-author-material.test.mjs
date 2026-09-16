@@ -12,9 +12,10 @@ import {
   WORKED_SOURCE_FILES,
 } from "../package/author-material.mjs";
 import { CLI_PACKAGE_TARGETS, packageTarget } from "../package/targets.mjs";
+import { fileURLToPath } from "node:url";
 
 const execute = promisify(execFile);
-const pdr = new URL("../../apps/cli/src/pdr.ts", import.meta.url).pathname;
+const pdr = fileURLToPath(new URL("../../apps/cli/src/pdr.ts", import.meta.url));
 
 test("package author material is self-contained, unified, and target-specific", async (t) => {
   assert.equal(WORKED_SOURCE_FILES.length, 13);
@@ -23,7 +24,7 @@ test("package author material is self-contained, unified, and target-specific", 
   const packageRoot = join(scratch, "protodriver-linux-x64");
   const links = await stagePackageAuthorMaterial({
     packageRoot,
-    sourceDirectory: new URL("../../", import.meta.url).pathname,
+    sourceDirectory: fileURLToPath(new URL("../../", import.meta.url)),
     target: packageTarget("linux-x64"),
   });
   assert.ok(links.checked > 17);
@@ -102,7 +103,7 @@ test("Windows package author material uses only its launcher and guide", async (
   const packageRoot = join(scratch, "protodriver-win32-x64");
   await stagePackageAuthorMaterial({
     packageRoot,
-    sourceDirectory: new URL("../../", import.meta.url).pathname,
+    sourceDirectory: fileURLToPath(new URL("../../", import.meta.url)),
     target: packageTarget("win32-x64"),
   });
   assert.deepEqual((await readdir(join(packageRoot, "docs"))).sort(), [
@@ -128,7 +129,7 @@ test("each release stages exactly its own target guide", async (t) => {
     const packageRoot = join(scratch, id);
     await stagePackageAuthorMaterial({
       packageRoot,
-      sourceDirectory: new URL("../../", import.meta.url).pathname,
+      sourceDirectory: fileURLToPath(new URL("../../", import.meta.url)),
       target: packageTarget(id),
     });
     assert.deepEqual(

@@ -121,10 +121,12 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
     }
     await client.connect({ mode: grant.modeId });
     let outcome;
+    let savedOutput: Awaited<ReturnType<typeof saveAuthoredOutput>> | undefined;
     if (operation.result.kind === "resource" || operation.result.kind === "file") {
       if (flags.has("resume")) throw new Error("authored resource output has no resume recipe");
       const output = flags.get("save-result"); if (!output) throw new Error("--save-result is required for declared resource output");
-      outcome = await saveAuthoredOutput(client, operation, args, output, register);
+      savedOutput = await saveAuthoredOutput(client, operation, args, output, register);
+      outcome = savedOutput.outcome;
     } else {
       if (flags.has("save-result")) throw new Error("operation has no declared resource output");
       const request = { operation: operation.id, arguments: args };
@@ -134,7 +136,11 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
     }
     // Close the owning session before its capture so outstanding tails cannot be certified away.
     await client.disconnect();
-    io.output.write((flags.has("json") ? stringifyGeneratedPublicJson(outcome) : renderAuthoredCliResult(operation.resultControl, outcome.result)) + "\n");
+    io.output.write((flags.has("json")
+      ? stringifyGeneratedPublicJson(outcome)
+      : savedOutput === undefined
+        ? renderAuthoredCliResult(operation.resultControl, outcome.result)
+        : `Saved ${savedOutput.byteLength} bytes to ${savedOutput.path}`) + "\n");
     if (outcome.outcome !== "completed") throw new Error(stringifyGeneratedPublicJson(outcome));
   } finally {
     observations?.dispose();
@@ -214,11 +220,13 @@ async function runAuthoredWorker(options: {
     }
     await client.connect({ mode: options.selection.modeId, profile: options.selection.profileId });
     let outcome;
+    let savedOutput: Awaited<ReturnType<typeof saveAuthoredOutput>> | undefined;
     if (options.operation.result.kind === "resource" || options.operation.result.kind === "file") {
       if (options.flags.has("resume")) throw new Error("authored resource output has no resume recipe");
       const output = options.flags.get("save-result");
       if (!output) throw new Error("--save-result is required for declared resource output");
-      outcome = await saveAuthoredOutput(client, options.operation, args, output, register);
+      savedOutput = await saveAuthoredOutput(client, options.operation, args, output, register);
+      outcome = savedOutput.outcome;
     } else {
       if (options.flags.has("save-result")) throw new Error("operation has no declared resource output");
       const request = { operation: options.operation.id, arguments: args };
@@ -231,7 +239,9 @@ async function runAuthoredWorker(options: {
     await client.disconnect();
     options.io.output.write((options.flags.has("json")
       ? stringifyGeneratedPublicJson(outcome)
-      : renderAuthoredCliResult(options.operation.resultControl, outcome.result)) + "\n");
+      : savedOutput === undefined
+        ? renderAuthoredCliResult(options.operation.resultControl, outcome.result)
+        : `Saved ${savedOutput.byteLength} bytes to ${savedOutput.path}`) + "\n");
     if (outcome.outcome !== "completed") throw new Error(stringifyGeneratedPublicJson(outcome));
   } finally {
     observations?.dispose();

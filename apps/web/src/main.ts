@@ -27,13 +27,14 @@ import type {
   BrowserWorkerProfile,
 } from "./browser-device-admission.ts";
 import { usbFilterMatches, type WebUsbFilterDevice } from "./webusb-filter.ts";
+import { serialChooserFilters, usbChooserFilters } from "./acquisition-filters.ts";
 import { installAuthoredControls } from "./authored-controls.ts";
 import { installPackageCatalog } from "./package-catalog.ts";
 import { loadAndRememberPackage as loadAndRememberPackageBytes } from "./package-loading.ts";
 
 interface WebSerialApi {
   requestPort(options: {
-    readonly filters: readonly {
+    readonly filters?: readonly {
       readonly usbVendorId?: number;
       readonly usbProductId?: number;
     }[];
@@ -376,25 +377,14 @@ async function grantAndConnect(): Promise<void> {
     // worker can only enumerate grants already made here.
     if (profile.transport === "serial") {
       if (serial === undefined) throw new Error("Web Serial is unavailable");
-      const port = await serial.requestPort({
-        filters: profile.acquisitionFilters.map((filter) => ({
-          ...(filter.vendorId === undefined ? {} : { usbVendorId: filter.vendorId }),
-          ...(filter.productId === undefined ? {} : { usbProductId: filter.productId }),
-        })),
-      });
+      const port = await serial.requestPort(serialChooserFilters(profile.acquisitionFilters));
       const info = port.getInfo();
       activeGrant = browserGrant(profile.acquisitionFilters.map((filter) =>
         (filter.vendorId === undefined || filter.vendorId === info.usbVendorId)
         && (filter.productId === undefined || filter.productId === info.usbProductId)));
     } else {
       if (usb === undefined) throw new Error("WebUSB is unavailable");
-      const device = await usb.requestDevice({
-        filters: profile.acquisitionFilters.map((filter) => ({
-          ...(filter.vendorId === undefined ? {} : { vendorId: filter.vendorId }),
-          ...(filter.productId === undefined ? {} : { productId: filter.productId }),
-          ...(filter.usbClass === undefined ? {} : { classCode: filter.usbClass }),
-        })),
-      });
+      const device = await usb.requestDevice(usbChooserFilters(profile.acquisitionFilters));
       activeGrant = browserGrant(profile.acquisitionFilters.map((filter) =>
         usbFilterMatches(filter, device)));
     }

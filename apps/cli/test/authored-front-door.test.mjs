@@ -82,3 +82,20 @@ test('Nspire ordinary CLI preserves presentation, typed information, and an exac
   text='';await runPdr(['run',path,'capture_screenshot','--save-result',saved],io,{authoredAcquisition:acquire});
   assert.deepEqual(await readFile(saved),expectedBmp());assert.equal(acquisitions,2);
 });
+
+test("a saved file result reports its destination and size instead of a blank line",async t=>{
+  // A resource result has no result control, so the ordinary renderer prints nothing and
+  // success is indistinguishable from a no-op without inspecting the filesystem.
+  const root=await mkdtemp(join(tmpdir(),"cli-file-report-"));t.after(()=>rm(root,{recursive:true,force:true}));
+  const path=join(root,"ti-nspire-handheld.pdpkg"),saved=join(root,"screen.bmp");
+  const sourceBytes=await readFile(new URL("../../../test-support/ti-nspire/device.lua",import.meta.url));
+  const {archive}=await buildPdpkg([{logicalName:"device.lua",sourceBytes}]);
+  await writeFile(path,archive);
+  let text="";
+  const output=new Writable({write(chunk,_encoding,done){text+=chunk;done();}}),io={input:[],output,error:output};
+  const acquire=async()=>({...createNspireNative(()=>{},{simple:true}),modeId:"device_information",profileId:"usb",channelId:"main",helpers:{}});
+  await runPdr(["run",path,"capture_screenshot","--save-result",saved],io,{authoredAcquisition:acquire});
+  const written=await readFile(saved);
+  assert.ok(text.includes(saved),"the destination the operator asked for must be named: "+JSON.stringify(text));
+  assert.match(text,new RegExp(String(written.length)),"the byte count distinguishes a write from a no-op");
+});

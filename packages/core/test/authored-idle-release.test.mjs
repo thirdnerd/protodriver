@@ -94,7 +94,7 @@ test('C6 cancelled logical read retains the native obstruction until delivery',{
  assert.deepEqual(h.writes,[],'cancelled ordinary suffix remains revoked');
 });
 test('C6 unsupported reentry authority refuses before effects',{timeout:3000},async t=>{
- const h=await harness(t,{threshold:1,requires:'"not-a-grant"'});await h.clock.advance(1000);await h.released();
+ const h=await harness(t,{threshold:1,requires:'"usb.control"'});await h.clock.advance(1000);await h.released();
  await assert.rejects(h.start(),e=>e.error?.code==='authored.capability.unavailable');assert.deepEqual(h.writes,[]);
 });
 test('C6 prefix and ordinary computation share cumulative Lua fuel',{timeout:3000},async t=>{

@@ -9,6 +9,7 @@ import { pollPlans } from "./authored-poll.ts";
 import { validateStreamedResult } from "./streaming-result.ts";
 import { validateSerialProfilePolicy } from "./serial-profile.ts";
 import { validateUsbProfilePolicyDeclaration } from "./usb-profile.ts";
+import { AUTHORED_CAPABILITY_NAMES } from "./authored-capabilities.ts";
 
 export class AuthoredAdmissionError extends Error {
   readonly code: string;
@@ -39,6 +40,14 @@ function names(value: unknown, path: string, nonempty = false): string[] {
   const result = nativeArray((value as unknown[])).map(item => name(item, path));
   if (new Set(result).size !== result.length) bad(path, "duplicate identifier");
   return result;
+}
+function validateLifecycleDependency(requires: readonly string[], invalidation: unknown, path: string): void {
+  if (requires.includes("connection.lifecycle") && invalidation === undefined)
+    bad(path, "connection.lifecycle requires an invalidation binding");
+}
+function validateCapabilityNames(requires: readonly string[], path: string): void {
+  const unknown = requires.find(requirement => !(AUTHORED_CAPABILITY_NAMES as readonly string[]).includes(requirement));
+  if (unknown !== undefined) bad(path, "unknown capability " + unknown);
 }
 function validateConnectionProfiles(d: Record<string, unknown>, modes: string[], profiles: string[]): void {
   const requests = record(d.connectionProfiles, "connectionProfiles");
@@ -188,8 +197,10 @@ export function admitAuthoredDescription(value: unknown, bindings: readonly stri
       bad("entry.inputEvidence", "consumed-ranges requires a named handoff recipient");
     if (entry.handoffTo !== undefined) name(entry.handoffTo, "entry.handoffTo");
     if (!bindings.includes(name(entry.binding, "entry.binding"))) throw new AuthoredAdmissionError("authored.binding.unresolved", "entry binding is unresolved");
-    names(entry.locks, "entry.locks"); names(entry.requires, "entry.requires");
-    if ((entry.requires as string[]).includes("operation.deadline")) bad("entry.requires", "operation deadlines are not entry authority");
+    names(entry.locks, "entry.locks"); const entryRequires = names(entry.requires, "entry.requires");
+    validateCapabilityNames(entryRequires, "entry.requires");
+    if (entryRequires.includes("operation.deadline")) bad("entry.requires", "operation deadlines are not entry authority");
+    validateLifecycleDependency(entryRequires, d.invalidation, "entry.requires");
   }
   if (!Array.isArray(d.operations) || !d.operations.length || d.operations.length > 128) bad("operations", "1..128 operations required");
   const ids = new Set<string>();
@@ -202,20 +213,26 @@ export function admitAuthoredDescription(value: unknown, bindings: readonly stri
     if (op.reentry !== undefined) {
       const r = record(op.reentry, id + ".reentry"); keys(r, ["binding", "requires"], [], id + ".reentry");
       if (!bindings.includes(name(r.binding, id + ".reentry.binding"))) throw new AuthoredAdmissionError("authored.binding.unresolved", "reentry binding unresolved");
-      names(r.requires, id + ".reentry.requires");
+      const reentryRequires = names(r.requires, id + ".reentry.requires");
+      validateCapabilityNames(reentryRequires, id + ".reentry.requires");
+      validateLifecycleDependency(reentryRequires, d.invalidation, id + ".reentry.requires");
     }
     if (typeof op.title !== "string" || !op.title.length || op.title.length > 256) bad(id, "bounded title required");
     if (op.description !== undefined) authoredText(op.description, id + ".description");
     if (!bindings.includes(name(op.binding, id + ".binding"))) throw new AuthoredAdmissionError("authored.binding.unresolved", id + ": " + op.binding);
     if (!["read-only", "changes-state", "destructive", "firmware"].includes(op.risk as string)) bad(id, "risk claim required");
     if (!["not-repeatable", "safe-to-repeat"].includes(op.repeatability as string)) bad(id, "repeatability claim required");
-    names(op.locks, id + ".locks"); names(op.requires, id + ".requires");
+    names(op.locks, id + ".locks"); const operationRequires = names(op.requires, id + ".requires");
+    validateCapabilityNames(operationRequires, id + ".requires");
+    validateLifecycleDependency(operationRequires, d.invalidation, id + ".requires");
     if (op.cleanup !== undefined) {
       const c = record(op.cleanup, id + ".cleanup");
       keys(c, ["binding", "requires", "maximumMilliseconds", "maximumLuaFuel", "maximumWork"], ["writeVia"], id + ".cleanup");
       if (!bindings.includes(name(c.binding, id + ".cleanup.binding"))) throw new AuthoredAdmissionError("authored.binding.unresolved", id + ": cleanup binding unresolved");
       const allowed = ["channel.read", "channel.write", "timer", "clock.observe", "expiry.observe", "input.retirement", "usb.control", "connection.lifecycle", "transfer.cleanup", "channel.write-via", "mailbox"];
-      if (names(c.requires, id + ".cleanup.requires").some(r => !allowed.includes(r))) bad(id, "unsupported cleanup authority");
+      const cleanupRequires = names(c.requires, id + ".cleanup.requires");
+      if (cleanupRequires.some(r => !allowed.includes(r))) bad(id, "unsupported cleanup authority");
+      validateLifecycleDependency(cleanupRequires, d.invalidation, id + ".cleanup.requires");
       if (c.writeVia !== undefined) name(c.writeVia, id + ".cleanup.writeVia");
       if ((c.writeVia !== undefined) !== (c.requires as string[]).includes("channel.write-via"))
         bad(id, "cleanup writeVia and channel.write-via must occur together");

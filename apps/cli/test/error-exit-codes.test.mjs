@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   GENERATED_CLI_ERROR_CATEGORIES,
@@ -18,7 +19,7 @@ const EXPECTED_EXIT_CODES = Object.freeze({
 
 function runCategory(category) {
   const child = spawn(process.execPath, [
-    new URL("./fixtures/error-category-child.mjs", import.meta.url).pathname,
+    fileURLToPath(new URL("./fixtures/error-category-child.mjs", import.meta.url)),
     category,
   ], { stdio: ["ignore", "pipe", "pipe"] });
   const output = [];
@@ -38,7 +39,7 @@ function runCategory(category) {
 
 function runPdr(argv) {
   const child = spawn(process.execPath, [
-    new URL("../src/pdr.ts", import.meta.url).pathname,
+    fileURLToPath(new URL("../src/pdr.ts", import.meta.url)),
     ...argv,
   ], { stdio: ["ignore", "pipe", "pipe"] });
   const output = [];
@@ -101,7 +102,7 @@ test("the pdr catch boundary uses the category map and never invents retryabilit
 
   const invalidPackage = await runPdr([
     "run",
-    new URL("../../../README.md", import.meta.url).pathname,
+    fileURLToPath(new URL("../../../README.md", import.meta.url)),
   ]);
   assert.equal(invalidPackage.exitCode, EXPECTED_EXIT_CODES.definition);
   assert.equal(invalidPackage.signal, null);

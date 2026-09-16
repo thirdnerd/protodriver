@@ -214,6 +214,17 @@ declares the public device surface and composes its bindings;
 \`channel-layout.lua\` owns the stored record schema and its encoding and
 decoding, deliberately without transport behavior.
 
+This module keeps a transfer session alive rather than replacing it, and its
+timing constants are measured properties of a real device rather than sample
+values. The mode it establishes is dropped after 300 ms of silence, so
+\`maximumInterTransactionGapMs\` declares that bound and the maintenance poll
+transmits every 200 ms to stay inside it. Reaching that mode ends the session in
+a device reset, so the profile declares a 3,000 ms post-termination silence and a
+300 ms opening drain before the next one. Those numbers are this design's answer
+for this device. A device whose session is consumed by a single operation wants
+the opposite design -- close and reacquire inside the operation -- which the
+declaration reference describes under session lifetime.
+
 The two \`require\` calls use each logical member name exactly as it appears in
 the package. They are lookups in the verified source set, not filesystem paths.
 Packaging admits all three Lua members together, and source-set identity covers

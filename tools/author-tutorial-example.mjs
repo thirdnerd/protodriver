@@ -60,7 +60,11 @@ export async function runAuthorTutorialExample() {
     if(errors.length)throw Error("tutorial command wrote unexpected stderr: "+Buffer.concat(errors).toString("utf8"));
     screenshot = new Uint8Array(await readFile(savedPath));
     const runOutput = Buffer.concat(output).toString("utf8");
-    const transcript=renderTranscript({packed,modeHelp,operationHelp,runOutput});
+    if(runOutput!==`Saved ${screenshot.byteLength} bytes to ${savedPath}\n`)
+      throw Error("tutorial command did not report its saved output");
+    // The published transcript ends at the command rather than embedding a
+    // host-specific scratch path. The receipt itself is checked immediately above.
+    const transcript=renderTranscript({packed,modeHelp,operationHelp});
     if(writes?.length!==155)throw Error("tutorial command did not execute the complete retained CE exchange");
     const screen=screenshot.subarray(66);
     if(screen.byteLength!==retained.fixture.expected.screenBytes||sha256(screen)!==retained.fixture.expected.screenSha256)
@@ -84,12 +88,12 @@ async function runPdrProcess(argv) {
   return result.stdout;
 }
 
-function renderTranscript({ packed, modeHelp, operationHelp, runOutput }) {
+function renderTranscript({ packed, modeHelp, operationHelp }) {
   const sections = [
     [displayedCommands.pack, packed],
     [displayedCommands.modeHelp, modeHelp],
     [displayedCommands.operationHelp, operationHelp],
-    [displayedCommands.run, runOutput],
+    [displayedCommands.run, ""],
   ];
   return `${sections.map(([command, output]) => {
     const rendered = output.trimEnd();

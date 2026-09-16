@@ -89,6 +89,8 @@ The serial transport domains are closed: `baudRate` is an integer in
 `afterAbnormalTermination`, and `afterModeExit`. The duration is a nonnegative
 safe integer and the two causes are booleans. A zero duration requires both
 causes false; a positive duration requires at least one cause true.
+[Session lifetime](#session-lifetime) describes what the two values do, when
+each is applied, and how to choose them for a device.
 
 Protodriver does not add a line codec to this profile. The handler receives raw
 bounded input pieces and authored Lua owns delimiter recognition, prefix
@@ -218,6 +220,44 @@ submission. The operation’s `write-via` request completes as
 `accepted-by-platform` only after the whole proposed value receives platform
 acceptance.
 
+### Capabilities an operation can require
+
+These are the capability names `requires` accepts; any other name is refused at
+admission, so a misspelling never reaches an operator as an unavailable
+capability. A capability is either
+available for the whole session or it is not; an operation requiring an
+unavailable one is refused before its binding runs, and the refusal names both
+the requirement and what would satisfy it.
+
+Most are granted by the host, but five are decided by the declaration itself, so
+an author controls them directly. Declaring a handler moves reliable input to
+that handler: it withdraws `channel.read` and `channel.write` from ordinary
+operations and is what makes `mailbox` available. Declaring an `invalidation`
+binding is what makes `connection.lifecycle` available at all, and
+`channel.write-via` appears only once some handler declares `authorizeWrite`.
+
+| Capability | Available when | Requests it authorizes |
+| --- | --- | --- |
+| `channel.read` | The declaration has no handler. A declared handler owns reliable input instead. | `read`, `read-bytes`, `input-channel`, `lease-read`, and `wait-any`/`wait-fill` with a positive count. |
+| `channel.write` | The declaration has no handler. | `write`, `lease-write`. |
+| `channel.write-via` | Some handler declares `authorizeWrite`. | `write-via`, approved byte-exactly by that handler. |
+| `mailbox` | The declaration has at least one handler. | `message-send`, `message-wait`. |
+| `timer` | Always. | `timer-arm`, `timer-cancel`, `wait-any`, `wait-fill`. |
+| `operation.deadline` | Always, for an ordinary operation. Entry and handlers cannot require it. | `deadline-arm`, `deadline-disarm`. |
+| `clock.observe` | Always. | `clock-observe`. |
+| `expiry.observe` | Always. | `expiry-reserve`, `expiry-start`, `expiry-read`, `expiry-release`. |
+| `connection.lifecycle` | The declaration names an `invalidation` binding. | `connection-grant`, `connection-close`, `connection-reacquire`. |
+| `usb.control` | The host grants USB control for the selected profile. | `control`. |
+| `state.poll` | The host grants a polling policy admitting every declared plan. | The declared state and maintenance polls. Lua issues no request for these; the host runs them. |
+| `transfer.checkpoint` | The host grants a durable checkpoint store. | The durable-transfer requests, described under [durable transfer metadata](#durable-transfer-metadata). |
+| `transfer.cleanup` | The host grants a durable checkpoint store. | `transfer-cleanup-state` and `transfer-retire`, in cleanup only. |
+| `input.retirement` | The host selects its bounded-ingress adapter, `entry.inputEvidence` is `consumed-ranges`, and exactly one handler declares the same. | `input-retirement`. |
+
+A capability is required at four independent sites — `entry.requires`, an
+operation's `requires`, its `cleanup.requires`, and its `reentry.requires` —
+and each is admitted separately. Requiring one in cleanup does not grant it to
+the ordinary operation, and the reverse is equally true.
+
 ### Exact core effect requests
 
 Every request is a closed record passed to `io.request`; extra or missing
@@ -242,6 +282,25 @@ to the matching effect in the same activation.
 | delivery provenance | `kind="input-channel"` | Current physical channel id; only valid after reliable input in this activation. |
 | retained-range accounting | `kind="input-consume"`, positive `length` no greater than unconsumed delivered bytes | `consumed`. |
 | entry ownership transfer | `kind="entry-handoff"`, `parser`, `timers="none"` | `accepted` or `refused`. |
+| read the current grant; `connection.lifecycle` | `kind="connection-grant"` | The live connection and lease ids joined by a vertical bar. Split on it to obtain the connection id a close requires. |
+| close the connection; `connection.lifecycle` | `kind="connection-close"`, the current `connection` id | `closed`, after the host revokes ids, discards queued input, retires timers and delivers the invalidation turn. Refused when the declaration has no `invalidation`. |
+| reacquire a connection; `connection.lifecycle` | `kind="connection-reacquire"` | The new connection and lease ids, joined as above. Valid only while no connection is live; `entry` does not run again. |
+| write the declared resource result | `kind="resource-write"`, granted `resource` id, `value` exact bytes | `settled`. Valid while no connection is live. |
+| publish a public state cell | `kind="state-publish"`, declared `cell`, `value`, and `quality` unless the cell declares `dependsOn` | `published`. |
+| observe the session clock; `clock.observe` | `kind="clock-observe"` | A session-relative monotonic observation. There is no ambient clock, and no timer survives it. |
+
+`connection-grant`, `connection-close`, `connection-reacquire`, `resource-write`,
+`deadline-arm` and `deadline-disarm` are the requests which do not require a live
+connection. Every other effect above is refused from the moment a connection
+closes until a reacquisition completes.
+
+The table covers the effects an ordinary device module reaches, and USB control
+requests are described below. The runtime also accepts the durable-transfer,
+byte-source, expiry-observation, retained-helper, capture-tap, lease and
+input-retirement families, whose exact request shapes this reference does not
+specify. Device 3 is the worked source for byte-source reads, expiry observation
+and input retirement; the retained-helper, capture-tap and lease families have no
+worked source in this release.
 
 Use a transaction deadline for the whole request/response operation and timers
 for protocol waits or earliest-action delays. A known 50 ms power-up delay says
@@ -250,6 +309,39 @@ latest response bound. When observations supply no response maximum, a
 conservative driver policy can provide a finite bound. Such a value is policy
 rather than a hardware-qualified fact, and a timeout alone does not justify
 widening it.
+
+### USB control requests
+
+A profile granted `usb.control` reaches the device's default control endpoint
+with one request:
+
+```lua
+local reply = io.request({ kind = "control", setup = {
+  direction = "device-to-host", requestType = "vendor", recipient = "device",
+  request = 0x01, value = 0, index = 0, length = 8,
+}, payload = {} })
+```
+
+`setup` is a closed record containing exactly `direction`, `requestType`,
+`recipient`, `request`, `value`, `index` and `length`; any other member, or a
+missing one, is refused. The domains are closed: `direction` is
+`device-to-host` or `host-to-device`; `requestType` is `standard`, `class` or
+`vendor`; `recipient` is `device`, `interface`, `endpoint` or `other`;
+`request` is an integer in 0..255; `value` and `index` are integers in
+0..65535; and `length` is an integer in 0..65535, of which a value above 256 is
+refused, because 256 octets bounds a control transfer in either direction.
+
+`payload` is always present, as an array of at most 256 octets: the request record
+is closed, so omitting the member is refused rather than read as an empty one. A
+`device-to-host` request passes an empty array and reads up to `length` octets; a
+`host-to-device` request passes exactly `length` octets. Declaring otherwise is
+refused before the transfer is submitted.
+
+The completion is JSON text naming the effect, its settlement, and the response
+octets. A host which has not granted USB control settles the request
+`unsupported` with its limitation rather than raising a failure. An operation
+which names `usb.control` in `requires` is separately refused before it starts
+on such a host.
 
 ### Bounded multi-message collection in contract 2
 
@@ -422,6 +514,72 @@ and requiring `channel.write-via`. The handler’s `authorizeWrite` binding sees
 the proposed bytes and origin and must affirm the exact write. A relayed owner
 does not simultaneously receive direct channel-read or channel-write authority.
 
+## Session lifetime
+
+A connection outlives the operation that ran over it. `entry` runs once, when
+the connection is acquired, and not again per operation; the host holds the
+connection open between operations and closes it when the session ends. An
+operation therefore begins with whatever mode and protocol state the previous
+operation left behind.
+
+That is the right arrangement for a device which can sit idle in a stable state.
+It is the wrong one for a device whose session is consumed by a single
+operation — one which resets on mode exit, or which drops a mode after a
+maximum silent interval. For those, an operation which needs the consumable
+state must close and reacquire the connection itself, inside the operation:
+
+```lua
+local grant = io.request({ kind = "connection-grant" })
+io.request({ kind = "connection-close", connection = grant:match("^([^|]+)") })
+io.request({ kind = "connection-reacquire" })
+```
+
+The close delivers the invalidation turn, the reacquisition opens a fresh
+connection, and `entry` does not run again — so anything entry established must
+be re-established by the operation. Declare `connection.lifecycle` on the
+operation and an `invalidation` binding on the module; without the binding the
+capability is unavailable and the operation is refused before it starts. Bound
+the whole sequence with a deadline that covers the post-termination silence and
+the opening drain, both described below, rather than the exchange alone.
+
+The alternative is to keep the session alive rather than replace it: a
+maintenance poll transmits often enough that the device never drops the mode.
+The two designs trade against each other, and the trade is the device's, not a
+preference. Holding the mode open costs continuous background traffic and a
+public read-only operation for the poll to invoke; replacing the session costs
+the silence, the drain and a fresh establishment on every operation, and on many
+devices a visible reset. Device 1 holds a transfer session open this way and its
+constants say so; a device which resets on mode exit wants the replacement above.
+
+### Choosing the lifecycle values
+
+`lifecycle.openingDrainQuietMs` is how long the port must be continuously quiet,
+after opening and before the first exchange, for the transport to consider the
+line settled. Bytes arriving during the window restart it. Set it from what the
+device emits unprompted — an unsolicited banner, the tail of a previous session,
+a reset chirp — and set it to zero only when the device is known to say nothing.
+A wrong value is invisible on a freshly powered device and on a CLI run that
+opens a port nothing else has touched; it appears when a previous session has
+left bytes in the pipe, which in practice means the browser, where the same port
+is reopened repeatedly within one page.
+
+The drain is bounded by what the transport will buffer, not only by time: a
+device which never falls quiet fails the open rather than draining indefinitely.
+A long window on a continuously chattering device is therefore not free.
+
+`lifecycle.postTerminationSilence` is how long the host waits after a
+termination before reopening. `minimumMs` is that interval;
+`afterModeExit` applies it when the host closed the connection, and
+`afterAbnormalTermination` applies it when the connection failed. A device with
+a mandated recovery interval after a reset needs both true, because the
+replacement sequence above is an ordinary host close. A zero interval requires
+both false, and a positive one requires at least one true.
+
+`maximumInterTransactionGapMs` on a maintenance poll is the device's bound, not
+the poll's period: it declares the longest silence the mode tolerates. The
+`intervalMs` is the period the host actually transmits at and belongs strictly
+inside that bound, leaving margin for a foreground operation to settle.
+
 ## Cleanup, invalidation, and state
 
 Cleanup is optional per operation. When present it declares a separate binding,
@@ -441,6 +599,17 @@ plan. A poll can invoke only an argument-free, read-only, safe-to-repeat value
 operation available in its mode. Maintenance uses the same poll shape. Polling
 is a host service governed by host policy; the source does not create a free
 background loop.
+
+That host policy is a real bound with published numbers, and a plan which
+exceeds it is refused at admission rather than slowed down. The ordinary policy
+admits a plan whose `intervalMs` is at least 1000. A shorter plan is a
+*required* plan and must satisfy all three of the following: it declares a
+`maximumInterTransactionGapMs` strictly greater than its own `intervalMs`; its
+`intervalMs` is at least the host's granted floor; and the nominal rate of every
+plan in the declaration summed together does not exceed the host's granted
+polls per second. The CLI and the browser both grant a 200 ms floor and five
+polls per second, so a 200 ms heartbeat admits and a 150 ms one does not.
+
 
 ## Durable transfer metadata
 

@@ -6,12 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { readPdpkg, verifyLuaSourceSet } from "@protodriver/contracts";
+import { fileURLToPath } from "node:url";
 
-const pdr = new URL("../src/pdr.ts", import.meta.url).pathname;
-const fixtureDevice = new URL(
-  "../../../examples/start/device.lua",
-  import.meta.url,
-).pathname;
+const pdr = fileURLToPath(new URL("../src/pdr.ts", import.meta.url));
+const fixtureDevice = fileURLToPath(new URL("../../../examples/start/device.lua",
+  import.meta.url));
 
 function run(cwd, args) {
   const child = spawn(process.execPath, [pdr, ...args], {
@@ -79,7 +78,7 @@ test("pdr pack is deterministic across runs and working directories and admits b
 test("pdr pack emits the sole authored contract", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "pdr-pack-authored-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
-  const source = new URL("../../../corpus/ti84-plus-ce/", import.meta.url).pathname;
+  const source = fileURLToPath(new URL("../../../corpus/ti84-plus-ce/", import.meta.url));
   const archive = join(scratch, "ti84-plus-ce.pdpkg");
   const packed = await run(scratch, ["pack", source, archive]);
   assert.equal(packed.exitCode, 0);

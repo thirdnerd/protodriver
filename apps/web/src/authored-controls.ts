@@ -56,6 +56,26 @@ const RESULT_SUMMARY: Readonly<Record<string, string>> = {
   file: "returns a file",
 };
 
+function errorRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : undefined;
+}
+
+/** Operation failures render in their own status area, so retain the complete
+ * actionable fault rather than reducing an RPC envelope to Error.message. */
+export function authoredOperationErrorText(cause: unknown): string {
+  const outer = errorRecord(cause);
+  const reported = errorRecord(outer?.error) ?? outer;
+  if (reported !== undefined && typeof reported.message === "string") {
+    const lines = [reported.message];
+    if (typeof reported.code === "string") lines.push(`Code: ${reported.code}`);
+    if (reported.details !== undefined) lines.push(`Details: ${stringifyGeneratedPublicJson(reported.details)}`);
+    return lines.join("\n");
+  }
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
 /** Data-derived controls. The page receives no acquisition callback or Lua VM. */
 export function installAuthoredControls(root: HTMLElement, loaded: NonNullable<BrowserLoadedDevice["authored"]>,
   context: BrowserSessionContext, initiallyConnected = false): void {
@@ -245,7 +265,7 @@ export function installAuthoredControls(root: HTMLElement, loaded: NonNullable<B
           }
         } catch (cause) {
           output.classList.add("task-error");
-          output.textContent = cause instanceof Error ? cause.message : String(cause);
+          output.textContent = authoredOperationErrorText(cause);
         }
         finally {
           for (const [operationId, view] of active) if (view.cancel === cancel) active.delete(operationId);

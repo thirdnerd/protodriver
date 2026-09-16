@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 const execute = promisify(execFile);
-const runTests = new URL("../run-tests.sh", import.meta.url).pathname;
+const runTests = fileURLToPath(new URL("../run-tests.sh", import.meta.url));
 const missingBranch = "review-environment-control-missing-branch";
 
 for (const nodeOptions of [

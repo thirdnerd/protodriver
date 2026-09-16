@@ -246,3 +246,10 @@ test("admitted operation keeps its cumulative Lua fuel account across yielded wr
     "failed dispatch consumes the remainder, not a fresh activation grant");
   assert.ok(h.writes.length>0 && h.writes.length<4,"some turns completed but yields did not reset the account");
 });
+test("an operation requiring connection.lifecycle is refused when no invalidation binding is declared", {timeout:3000}, async()=>{
+  const module=await admitAuthoredModule(await population(),artifact);
+  const d=structuredClone(module.description);
+  assert.equal(d.invalidation,undefined,"fixture must declare no invalidation for this to be the case under test");
+  d.operations[0].requires=["connection.lifecycle"];
+  assert.throws(()=>admitAuthoredDescription(d,module.bindings),error=>error.code==="authored.declaration.invalid","static lifecycle dependency must be refused at admission, not at operation start");
+});
