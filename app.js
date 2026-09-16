@@ -1865,6 +1865,23 @@ function matchesOptional(expected, actual) {
   return expected === null || expected === void 0 || expected === actual;
 }
 
+// src/acquisition-filters.ts
+function serialChooserFilters(filters) {
+  if (filters.some((filter) => filter.vendorId === void 0 && filter.productId === void 0)) return {};
+  return { filters: filters.map((filter) => ({
+    ...filter.vendorId === void 0 ? {} : { usbVendorId: filter.vendorId },
+    ...filter.productId === void 0 ? {} : { usbProductId: filter.productId }
+  })) };
+}
+function usbChooserFilters(filters) {
+  if (filters.some((filter) => filter.vendorId === void 0 && filter.productId === void 0 && filter.usbClass === void 0)) return { filters: [] };
+  return { filters: filters.map((filter) => ({
+    ...filter.vendorId === void 0 ? {} : { vendorId: filter.vendorId },
+    ...filter.productId === void 0 ? {} : { productId: filter.productId },
+    ...filter.usbClass === void 0 ? {} : { classCode: filter.usbClass }
+  })) };
+}
+
 // ../../packages/control-model/src/authored.ts
 function requireAuthoredOutput(model, outcome, destinationId, bytes) {
   const r = outcome.resourceResult;
@@ -2473,6 +2490,20 @@ var RESULT_SUMMARY = {
   resource: "returns bytes",
   file: "returns a file"
 };
+function errorRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
+function authoredOperationErrorText(cause) {
+  const outer = errorRecord(cause);
+  const reported = errorRecord(outer?.error) ?? outer;
+  if (reported !== void 0 && typeof reported.message === "string") {
+    const lines = [reported.message];
+    if (typeof reported.code === "string") lines.push(`Code: ${reported.code}`);
+    if (reported.details !== void 0) lines.push(`Details: ${stringifyGeneratedPublicJson(reported.details)}`);
+    return lines.join("\n");
+  }
+  return cause instanceof Error ? cause.message : String(cause);
+}
 function installAuthoredControls(root, loaded2, context, initiallyConnected = false) {
   const filePreviewOwner = new BrowserFilePreviewOwner();
   root.replaceChildren();
@@ -2683,7 +2714,7 @@ function installAuthoredControls(root, loaded2, context, initiallyConnected = fa
           }
         } catch (cause) {
           output.classList.add("task-error");
-          output.textContent = cause instanceof Error ? cause.message : String(cause);
+          output.textContent = authoredOperationErrorText(cause);
         } finally {
           for (const [operationId, view] of active) if (view.cancel === cancel) active.delete(operationId);
           cancel.disabled = true;
@@ -2826,7 +2857,7 @@ function buildArgument(name, control, fields) {
 
 // src/package-catalog.ts
 async function installPackageCatalog(view) {
-  const requestedUrl = new URL("catalog.json", view.baseURI).href;
+  const requestedUrl = new URL(view.catalogHref ?? "catalog.json", view.baseURI).href;
   let response;
   try {
     response = await view.fetcher(requestedUrl);
@@ -3033,6 +3064,9 @@ setConnected(false);
 void refreshStoredPackages().catch(showError);
 void installPackageCatalog({
   baseURI: document.baseURI,
+  catalogHref: document.querySelector(
+    'meta[name="protodriver-package-catalog"]'
+  )?.content,
   region: catalogRegion,
   select: catalogSelect,
   document,
@@ -3215,23 +3249,12 @@ async function grantAndConnect() {
   try {
     if (profile.transport === "serial") {
       if (serial === void 0) throw new Error("Web Serial is unavailable");
-      const port = await serial.requestPort({
-        filters: profile.acquisitionFilters.map((filter) => ({
-          ...filter.vendorId === void 0 ? {} : { usbVendorId: filter.vendorId },
-          ...filter.productId === void 0 ? {} : { usbProductId: filter.productId }
-        }))
-      });
+      const port = await serial.requestPort(serialChooserFilters(profile.acquisitionFilters));
       const info = port.getInfo();
       activeGrant = browserGrant(profile.acquisitionFilters.map((filter) => (filter.vendorId === void 0 || filter.vendorId === info.usbVendorId) && (filter.productId === void 0 || filter.productId === info.usbProductId)));
     } else {
       if (usb === void 0) throw new Error("WebUSB is unavailable");
-      const device = await usb.requestDevice({
-        filters: profile.acquisitionFilters.map((filter) => ({
-          ...filter.vendorId === void 0 ? {} : { vendorId: filter.vendorId },
-          ...filter.productId === void 0 ? {} : { productId: filter.productId },
-          ...filter.usbClass === void 0 ? {} : { classCode: filter.usbClass }
-        }))
-      });
+      const device = await usb.requestDevice(usbChooserFilters(profile.acquisitionFilters));
       activeGrant = browserGrant(profile.acquisitionFilters.map((filter) => usbFilterMatches(filter, device)));
     }
     const candidates = (await requireClient().resolveCandidates({
