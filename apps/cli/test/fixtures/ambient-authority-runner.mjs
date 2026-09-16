@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import net from "node:net";
+import { devNull } from "node:os";
 import { Writable } from "node:stream";
 
 import { MockTransport } from "../../../../packages/transport-mock/src/index.ts";
@@ -30,8 +31,8 @@ async function recordingOpenSession() {
 }
 
 process.env.PDR_AMBIENT_PHASE = "control";
-await readFile("/dev/null");
-readFileSync("/dev/null");
+await readFile(devNull);
+readFileSync(devNull);
 await new Promise((resolveControl) => {
   const socket = net.connect({ path: `/tmp/protodriver-ambient-missing-${process.pid}.sock` });
   socket.once("error", resolveControl);

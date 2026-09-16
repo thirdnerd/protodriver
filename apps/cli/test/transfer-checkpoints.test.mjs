@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { watch } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
@@ -67,7 +67,9 @@ function resumeOptions(store, claim, adapter) {
 }
 
 test("an in-progress live lock is held even while its owner record is incomplete", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "protodriver-checkpoint-lock-race-"));
+  // Canonicalize Windows 8.3 temp paths before fs.watch: libuv reports the
+  // event with the long directory name and aborts if the spellings differ.
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "protodriver-checkpoint-lock-race-")));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const store = new NodeTransferCheckpointStore(directory);
   await store.create(checkpoint());
