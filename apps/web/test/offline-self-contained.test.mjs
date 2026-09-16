@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import test from "node:test";
 
 import {
@@ -46,7 +46,10 @@ test("browser offline check fails on an external stylesheet and refuses an empty
 test("browser offline graph reaches the committed Lua VM", async () => {
   const result = await checkBrowserOffline();
   assert.equal(result.runtimeAssetCount, 1);
-  assert.deepEqual(result.runtimeAssets.map(path => path.slice(path.lastIndexOf("/packages/") + 1)).sort(), [
+  assert.deepEqual(result.runtimeAssets.map((path) => {
+    const logical = path.split(sep).join("/");
+    return logical.slice(logical.lastIndexOf("/packages/") + 1);
+  }).sort(), [
     "packages/lua-vm/artifacts/protodriver-retained-v2.wasm",
   ]);
   assert.deepEqual(result.failures, []);

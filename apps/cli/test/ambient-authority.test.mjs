@@ -70,7 +70,7 @@ test("CLI package loading has only its named and pinned authority", { timeout: 2
 async function runInstrumented(packagePaths) {
   const preload = resolve(import.meta.dirname, "fixtures/ambient-authority-preload.mjs");
   const runner = resolve(import.meta.dirname, "fixtures/ambient-authority-runner.mjs");
-  const child = spawn(process.execPath, ["--import", preload, runner, ...packagePaths], {
+  const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href, runner, ...packagePaths], {
     cwd: cliRoot,
     stdio: ["ignore", "pipe", "pipe"],
   });

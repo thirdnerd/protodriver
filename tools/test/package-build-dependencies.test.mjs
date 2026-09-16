@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +14,10 @@ import {
 } from "../install-package-build-dependencies.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+function logicalRelative(from, to) {
+  return relative(from, to).split(sep).join("/");
+}
 
 test("Windows npm invokes its JavaScript CLI through Node without a batch shell", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "protodriver-npm-layout-"));
@@ -108,7 +112,7 @@ if (arguments_[0] === "approve-scripts") {
     log.filter(({ arguments_ }) => arguments_[0] !== "ci")
       .map(({ cwd, arguments_ }) => ({
         arguments_,
-        workspace: relative(scratch, cwd),
+        workspace: logicalRelative(scratch, cwd),
       })),
     [
       {
@@ -157,6 +161,6 @@ async function workspaceClosure(entryPaths) {
     }
   }
   return [...visited]
-    .map((path) => relative(repositoryRoot, path))
+    .map((path) => logicalRelative(repositoryRoot, path))
     .sort();
 }

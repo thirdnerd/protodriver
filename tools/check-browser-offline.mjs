@@ -2,7 +2,7 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, extname, relative, resolve } from "node:path";
+import { dirname, extname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "../packages/generated-cli/src/node-entry-point.ts";
@@ -44,6 +44,10 @@ const fetchedLinkRelations = new Set([
   "prerender",
   "stylesheet",
 ]);
+
+function repositoryPath(path) {
+  return relative(repositoryRoot, path).split(sep).join("/");
+}
 
 export function inspectBrowserHtml(sourceText) {
   const masked = maskComments(sourceText, /<!--[\s\S]*?-->/gu);
@@ -190,7 +194,7 @@ export async function checkBrowserOffline(sourceRoot = defaultSourceRoot) {
     for (const finding of findings) {
       const position = lineAndColumn(sourceText, finding.index);
       failures.push(
-        `${relative(repositoryRoot, path)}:${position.line}:${position.column}`
+        `${repositoryPath(path)}:${position.line}:${position.column}`
           + ` external runtime dependency ${JSON.stringify(finding.reference)} via ${finding.sink}`,
       );
     }
@@ -269,7 +273,7 @@ async function browserRuntimeSourceFiles(sourceRoot) {
       try {
         dependency = createRequire(path).resolve(specifier);
       } catch (cause) {
-        throw new Error(`browser-offline: cannot resolve runtime import ${JSON.stringify(specifier)} from ${relative(repositoryRoot, path)}`, { cause });
+        throw new Error(`browser-offline: cannot resolve runtime import ${JSON.stringify(specifier)} from ${repositoryPath(path)}`, { cause });
       }
       const resolved = resolve(dependency);
       if (!isPathWithin(repositoryRoot, resolved)) continue;

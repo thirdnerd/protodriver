@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { Writable } from "node:stream";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -28,7 +28,7 @@ async function cli(argv, scratch) {
   const { stdout, stderr } = await execute(process.execPath, ["apps/cli/src/pdr.ts", ...argv],
     {cwd: root, encoding: "utf8"});
   if (stderr) throw Error(`unexpected CLI stderr: ${stderr}`);
-  return stdout.replaceAll(`${scratch}/`, "").trimEnd();
+  return stdout.replaceAll(`${scratch}${sep}`, "").trimEnd();
 }
 
 async function runWithSimulator(packagePath, operation, simulator, flags = []) {

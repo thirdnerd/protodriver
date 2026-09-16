@@ -2,7 +2,7 @@
 
 import { readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, extname, join, relative, resolve } from "node:path";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "../packages/generated-cli/src/node-entry-point.ts";
@@ -10,6 +10,10 @@ import { isPathWithin } from "./path-containment.mjs";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const parseExtensions = new Set([".js", ".mjs", ".ts", ".tsx"]);
+
+function repositoryPath(root, path) {
+  return relative(root, path).split(sep).join("/");
+}
 
 export async function checkPackageBootstrap({ sourceDirectory = defaultRoot } = {}) {
   const root = resolve(sourceDirectory);
@@ -37,24 +41,24 @@ export async function checkPackageBootstrap({ sourceDirectory = defaultRoot } = 
       }
       if (specifier === undefined || specifier.startsWith("node:")) continue;
       if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
-        violations.push(`${relative(root, path)}: static import ${JSON.stringify(specifier)} is not node: or relative`);
+        violations.push(`${repositoryPath(root, path)}: static import ${JSON.stringify(specifier)} is not node: or relative`);
         continue;
       }
       const dependency = resolve(dirname(path), specifier);
       if (!isPathWithin(root, dependency)) {
-        violations.push(`${relative(root, path)}: relative import escapes the repository: ${JSON.stringify(specifier)}`);
+        violations.push(`${repositoryPath(root, path)}: relative import escapes the repository: ${JSON.stringify(specifier)}`);
         continue;
       }
       try {
         if (!(await stat(dependency)).isFile()) throw new Error("not a file");
       } catch {
-        violations.push(`${relative(root, path)}: static import cannot be resolved: ${JSON.stringify(specifier)}`);
+        violations.push(`${repositoryPath(root, path)}: static import cannot be resolved: ${JSON.stringify(specifier)}`);
         continue;
       }
       if (parseExtensions.has(extname(dependency))) queue.push(dependency);
     }
   }
-  return Object.freeze({ files: [...visited].map((path) => relative(root, path)).sort(), violations });
+  return Object.freeze({ files: [...visited].map((path) => repositoryPath(root, path)).sort(), violations });
 }
 
 if (await isMainModule(import.meta.url)) {

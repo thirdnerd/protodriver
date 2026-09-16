@@ -2,7 +2,7 @@
 
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -40,8 +40,8 @@ export function defaultNodeRuntimeRoot({
 } = {}) {
   if (target === undefined) throw new TypeError("target is required");
   return target.os === "win32"
-    ? dirname(executable)
-    : resolve(dirname(executable), "..");
+    ? win32.dirname(executable)
+    : posix.resolve(posix.dirname(executable), "..");
 }
 
 export async function buildPackage({

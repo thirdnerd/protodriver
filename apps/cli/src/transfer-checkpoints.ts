@@ -42,6 +42,10 @@ function leaf(id: string): string {
 }
 
 async function fsyncDirectory(directory: string): Promise<void> {
+  // Windows FlushFileBuffers rejects directory handles. File contents are
+  // still synced before publication there, and rename/link remain atomic, but
+  // Windows has no equivalent directory-metadata durability barrier here.
+  if (process.platform === "win32") return;
   const handle = await open(directory, "r");
   try {
     await handle.sync();
@@ -50,7 +54,11 @@ async function fsyncDirectory(directory: string): Promise<void> {
   }
 }
 
-/** Node durable store: exclusive process claim plus fsynced atomic replacement. */
+/**
+ * Node checkpoint store with exclusive process claims and atomic replacement.
+ * POSIX commits also fsync directory metadata; Windows guarantees the synced
+ * file and atomic publication, but not persistence of that metadata on crash.
+ */
 export class NodeTransferCheckpointStore implements TransferCheckpointStore {
   readonly #directory: string;
   readonly #claims = new Map<string, HeldClaim>();
