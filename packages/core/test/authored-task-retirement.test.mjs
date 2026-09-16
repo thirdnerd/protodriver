@@ -12,7 +12,9 @@ test('normal return retires within remaining terminal work without another Lua t
  const e=await execution(t,'return nil');let work=0,ceiling=100000;
  await e.register('root',undefined,n=>{work+=n;assert.ok(work<=ceiling,'terminal allowance cannot afford a second ABI crossing');});
  const r=await e.startOperation('root','run',{},{});assert.equal(r.value.kind,'result');r.release();
- await assert.rejects(e.register('root'),/account-limit/,'task death does not release the host account');
+ await assert.rejects(e.register('root'),cause=>/account-limit/u.test(cause.message)
+   && cause.error?.code==='authored.vm.account-limit'
+   && cause.error?.responsibility==='host','task death does not release the host account');
  ceiling=work+16;const retired=await e.retire('root');assert.equal(retired.consumed,0);
 });
 for(const forged of [false,true])test('author-yielded result'+(forged?' with forged death fields':'')+' cannot survive retirement',async t=>{

@@ -116,6 +116,13 @@ export interface PlatformCauseSnapshot {
 
 export type Retryability = "no" | "after-reconnect" | "after-recovery" | "unknown";
 
+/** The party or failure domain that must act before the request can succeed. */
+export type PdrFailureResponsibility = "invocation" | "definition" | "operation" | "host";
+
+export function isPdrFailureResponsibility(value: unknown): value is PdrFailureResponsibility {
+  return value === "invocation" || value === "definition" || value === "operation" || value === "host";
+}
+
 /**
  * One envelope for every error crossing a boundary.
  *
@@ -128,7 +135,14 @@ export type Retryability = "no" | "after-reconnect" | "after-recovery" | "unknow
 export interface PdrError {
   readonly code: string;
   readonly message: string;
+  /** Absent only when the producer failed to classify the error. */
+  readonly responsibility?: PdrFailureResponsibility;
   readonly details?: PublicValue;
   readonly retryability: Retryability;
   readonly platformCause?: PlatformCauseSnapshot;
+}
+
+/** A trusted, actionable failure constructed by a product boundary. */
+export interface PdrFailure extends PdrError {
+  readonly responsibility: PdrFailureResponsibility;
 }

@@ -58,9 +58,10 @@ export async function stagePackageAuthorMaterial({
     { recursive: true },
   );
 
-  const [tutorial, reference, thermostat, ceGuide, linuxUsb] = await Promise.all([
+  const [tutorial, reference, cliReference, thermostat, ceGuide, linuxUsb] = await Promise.all([
     readFile(join(sourceRoot, "docs/author-tutorial.md"), "utf8"),
     readFile(join(sourceRoot, "docs/declaration-reference.md"), "utf8"),
+    readFile(join(sourceRoot, "docs/cli-reference.md"), "utf8"),
     readFile(join(sourceRoot, DEMO_THERMOSTAT_SOURCE, "README.md"), "utf8"),
     readFile(join(sourceRoot, CE_GUIDE_SOURCE), "utf8"),
     readFile(join(sourceRoot, "docs/linux-usb-permissions.md"), "utf8"),
@@ -69,6 +70,7 @@ export async function stagePackageAuthorMaterial({
     writeFile(join(root, "README.md"), renderReadme(target, guidePath)),
     writeFile(join(root, "docs/author-tutorial.md"), transformTutorial(tutorial, target)),
     writeFile(join(root, "docs/declaration-reference.md"), transformReference(reference)),
+    writeFile(join(root, "docs/cli-reference.md"), cliReference),
     writeFile(join(root, guidePath), renderTargetGuide(target, linuxUsb)),
     writeFile(join(root, "examples/README.md"), renderExamplesReadme()),
     writeFile(join(root, "examples/device-1/README.md"), renderDevice1Example()),
@@ -171,9 +173,10 @@ ${command} inspect blank-device.pdpkg
 \`\`\`
 
 Read [Write a device module](docs/author-tutorial.md), the [contract-2
-reference](docs/declaration-reference.md), and this release's [target setup
-guide](${guidePath}). [The examples index](examples/README.md) distinguishes the
-blank source, the progressive thermostat walkthrough, and finished modules.
+reference](docs/declaration-reference.md), the [CLI automation
+reference](docs/cli-reference.md), and this release's [target setup
+guide](${guidePath}). [The examples index](examples/README.md) distinguishes
+the blank source, the progressive thermostat walkthrough, and finished modules.
 
 Generated help and inspect do not enumerate acquisition candidates. An actual
 operation begins acquisition and may run entry protocol writes after selection.

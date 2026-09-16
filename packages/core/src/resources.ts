@@ -98,6 +98,7 @@ function pdrError(code: string, message: string, details?: PdrError["details"]):
   return {
     code,
     message,
+    responsibility: "operation",
     retryability: "no",
     ...(details === undefined ? {} : { details }),
   };
@@ -120,14 +121,14 @@ function failure(cause: unknown, operation: string): PdrError {
       },
     );
     const platformCause = causeSnapshot(cause);
-    return platformCause === undefined ? base : { ...base, platformCause };
+    return platformCause === undefined ? { ...base, responsibility: "host" } : { ...base, responsibility: "host", platformCause };
   }
   const base = pdrError(
     `resource.${operation}-failed`,
     cause instanceof Error ? cause.message : String(cause),
   );
   const platformCause = causeSnapshot(cause);
-  return platformCause === undefined ? base : { ...base, platformCause };
+  return platformCause === undefined ? { ...base, responsibility: "host" } : { ...base, responsibility: "host", platformCause };
 }
 
 function responseError(callId: BrokerCallId, error: PdrError): ResourceRpcResponse {

@@ -7,6 +7,7 @@ import type {
   HostByteSource,
   ResourceId,
 } from "@protodriver/contracts";
+import { generatedCliExpectedError } from "./errors.ts";
 import {
   formatGeneratedHumanBase64Bytes,
   formatGeneratedHumanBytes,
@@ -329,9 +330,23 @@ export async function registerAuthoredFileArgument(operation: import("@protodriv
   name: string, path: string, register: (source: HostByteSource) => Promise<ResourceId>) {
   const type = operation.arguments[name];
   if (type?.kind !== "byte-source" && type?.kind !== "stream-source") throw new Error("argument is not a declared file source: " + name);
-  const metadata = await stat(path);
-  if (!metadata.isFile()) throw new Error("source selection must be a file");
-  const source = await FileByteSource.open(path, metadata.size);
+  let metadata;
+  try { metadata = await stat(path); }
+  catch (cause) {
+    const code = cause instanceof Error && "code" in cause ? (cause as NodeJS.ErrnoException).code : undefined;
+    throw generatedCliExpectedError(code === "ENOENT" || code === "ENOTDIR" ? "cli.path.not-found" : "cli.filesystem.failed",
+      code === "ENOENT" || code === "ENOTDIR" ? `source file ${path} does not exist` : `cannot inspect source file ${path}`,
+      code === "ENOENT" || code === "ENOTDIR" ? "invocation" : "host", cause);
+  }
+  if (!metadata.isFile()) throw generatedCliExpectedError("cli.argument.file-required", "source selection must be a file", "invocation");
+  let source: FileByteSource;
+  try { source = await FileByteSource.open(path, metadata.size); }
+  catch (cause) {
+    const code = cause instanceof Error && "code" in cause ? (cause as NodeJS.ErrnoException).code : undefined;
+    throw generatedCliExpectedError(code === "ENOENT" || code === "ENOTDIR" ? "cli.path.not-found" : "cli.filesystem.failed",
+      code === "ENOENT" || code === "ENOTDIR" ? `source file ${path} no longer exists` : `cannot open source file ${path}`,
+      code === "ENOENT" || code === "ENOTDIR" ? "invocation" : "host", cause);
+  }
   try { return { argument: { kind: "resource" as const, id: await register(source) }, close: () => source.close() }; }
   catch (cause) { await source.close(); throw cause; }
 }

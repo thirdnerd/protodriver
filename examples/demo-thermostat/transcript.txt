@@ -118,7 +118,7 @@ failure: demo-thermostat.range-refused
 wrote: "ID?\r", "SET 2300\r"
 
 runPdr set_target --target_centi_c 4000 [argument bound]
-failure: Error: authored.value.invalid: value outside declared range
+failure: authored.value.invalid
 wrote: "ID?\r"
 
 $ simulator raw SET 4000\r

@@ -5,7 +5,7 @@ import { StreamingSha256 } from "./streaming-sha256.ts";
 import { validateEffectiveSourceRange, type EffectiveSourceRange } from "./effective-source-range.ts";
 
 function requireSource(ok: unknown, message: string, code = "authored.source.invalid"): asserts ok {
-  if (!ok) throw Object.assign(new Error(message), { error: { code, message, retryability: "no" } });
+  if (!ok) throw Object.assign(new Error(message), { error: { code, message, responsibility: "invocation", retryability: "no" } });
 }
 const WINDOW = 65536;
 /** One exclusive cursor; neither its registrar ID nor any method enters Lua. */

@@ -1,7 +1,7 @@
-import type { AuthoredChannelRoles, ByteChannel, ChannelLease, DeviceConnection } from "@protodriver/contracts";
+import type { AuthoredChannelRoles, ByteChannel, ChannelLease, DeviceConnection, PdrFailureResponsibility } from "@protodriver/contracts";
 
-function refused(code: string, message: string, details?: { failures: string[] }): Error {
-  return Object.assign(new Error(message), { error: { code, message, retryability: "no", ...(details ? { details } : {}) } });
+function refused(code: string, message: string, details?: { failures: string[] }, responsibility: PdrFailureResponsibility = "operation"): Error {
+  return Object.assign(new Error(message), { error: { code, message, responsibility, retryability: "no", ...(details ? { details } : {}) } });
 }
 /** Atomic, at most three distinct physical leases. No native object enters Lua. */
 export class ChannelGroup {
@@ -21,13 +21,13 @@ export class ChannelGroup {
       iteration(); live();
       const id = roles[role];
       if (typeof id !== "string" || !/^[a-zA-Z][a-zA-Z0-9_.-]{0,95}$/.test(id))
-        throw refused("retained.channel-unavailable", "invalid channel for role " + role);
+        throw refused("retained.channel-unavailable", "invalid channel for role " + role, undefined, "definition");
       let channel: ByteChannel | undefined;
       for (const candidate of connection.channels) { iteration(); if (candidate.id === id) { channel = candidate; break; } }
       if (!channel) throw refused("retained.channel-unavailable", "role " + role + " channel " + id + " is unavailable");
       const direction = role === "request" ? "out" : "in";
       if (channel.direction !== direction && channel.direction !== "duplex")
-        throw refused("retained.channel-direction", "role " + role + " channel " + id + " has no " + (direction === "in" ? "input" : "output") + " endpoint");
+        throw refused("retained.channel-direction", "role " + role + " channel " + id + " has no " + (direction === "in" ? "input" : "output") + " endpoint", undefined, "definition");
       if (!selected.includes(channel)) selected.push(channel);
     }
     const acquired: Array<{ channel: ByteChannel; lease: ChannelLease }> = [];

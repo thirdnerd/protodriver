@@ -49,6 +49,7 @@ export interface LuaSourceSetDiagnostic {
 }
 
 export class LuaSourceSetVerificationError extends Error {
+  readonly responsibility = "definition" as const;
   readonly diagnostic: LuaSourceSetDiagnostic;
 
   constructor(diagnostic: LuaSourceSetDiagnostic) {

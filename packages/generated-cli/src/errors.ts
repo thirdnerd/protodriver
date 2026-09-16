@@ -1,12 +1,16 @@
 import type {
+  PdrFailure,
+  PdrFailureResponsibility,
   PlatformCauseSnapshot,
   PublicValue,
   Retryability,
 } from "@protodriver/contracts";
+import { isPdrFailureResponsibility } from "@protodriver/contracts";
 
 export interface GeneratedCliErrorEnvelope {
   readonly code: string;
   readonly message: string;
+  readonly responsibility?: PdrFailureResponsibility;
   readonly details?: PublicValue;
   readonly retryability?: Retryability;
   readonly platformCause?: PlatformCauseSnapshot;
@@ -14,64 +18,41 @@ export interface GeneratedCliErrorEnvelope {
 
 export type GeneratedCliErrorCategory =
   | "unexpected"
+  | "invocation"
   | "definition"
   | "operation"
   | "host"
-  | "uncategorized"
   | "cancelled";
 
 export const GENERATED_CLI_ERROR_CATEGORIES = Object.freeze([
-  "unexpected",
+  "invocation",
   "definition",
   "operation",
   "host",
-  "uncategorized",
+  "unexpected",
   "cancelled",
 ] as const satisfies readonly GeneratedCliErrorCategory[]);
 
 const EXIT_CODE_BY_CATEGORY = Object.freeze({
-  unexpected: 1,
+  invocation: 5,
   definition: 2,
   operation: 3,
   host: 4,
-  uncategorized: 5,
+  unexpected: 1,
   cancelled: 130,
 } as const satisfies Readonly<Record<GeneratedCliErrorCategory, number>>);
-
-// This is deliberately a category decision, not a code catalogue. Diagnostic
-// codes are still declared across their owning packages; an unfamiliar
-// namespace remains visible as uncategorized instead of being absorbed here.
-const DEFINITION_NAMESPACES = new Set([
-  "admission",
-  "codec",
-  "control-model",
-  "lua-invocation",
-  "lua-source-set",
-  "lua-vm",
-  "pdpkg",
-  "usb",
-  "value",
-]);
-const OPERATION_NAMESPACES = new Set([
-  "acquisition",
-  "device",
-  "protocol",
-  "transfer",
-  "transport",
-]);
-const HOST_NAMESPACES = new Set([
-  "capture",
-  "diagnostic",
-  "operation",
-  "resource",
-  "rpc",
-  "session",
-]);
 
 export interface GeneratedCliFailure {
   readonly error: GeneratedCliErrorEnvelope;
   readonly category: GeneratedCliErrorCategory;
   readonly exitCode: number;
+}
+
+/** Mark a failure as expected at the CLI boundary; arbitrary Error.code values remain untyped. */
+export function generatedCliExpectedError(code: string, message: string,
+  responsibility: PdrFailureResponsibility, cause?: unknown): Error & { readonly error: PdrFailure } {
+  const error: PdrFailure = { code, message, responsibility, retryability: "no" };
+  return Object.assign(new Error(`${code}: ${message}`, cause === undefined ? undefined : { cause }), { error });
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -85,11 +66,15 @@ function isRetryability(value: unknown): value is Retryability {
     || value === "unknown";
 }
 
-function copyKnownError(value: unknown): GeneratedCliErrorEnvelope | undefined {
+function copyKnownError(value: unknown, wrapperResponsibility?: unknown): GeneratedCliErrorEnvelope | undefined {
   if (!isRecord(value) || typeof value.code !== "string" || typeof value.message !== "string") return undefined;
+  const responsibility = isPdrFailureResponsibility(value.responsibility)
+    ? value.responsibility
+    : isPdrFailureResponsibility(wrapperResponsibility) ? wrapperResponsibility : undefined;
   return Object.freeze({
     code: value.code,
     message: value.message,
+    ...(responsibility === undefined ? {} : { responsibility }),
     ...(Object.hasOwn(value, "details") && value.details !== undefined
       ? { details: value.details as PublicValue }
       : typeof value.declarationPath === "string"
@@ -108,11 +93,11 @@ export function generatedCliError(cause: unknown): GeneratedCliErrorEnvelope {
     return Object.freeze({ code: "cli.cancelled", message: cause.message });
   }
   if (isRecord(cause)) {
-    const boundary = copyKnownError(cause.error);
+    const boundary = copyKnownError(cause.error, cause.responsibility);
     if (boundary !== undefined) return boundary;
-    const diagnostic = copyKnownError(cause.diagnostic);
+    const diagnostic = copyKnownError(cause.diagnostic, cause.responsibility);
     if (diagnostic !== undefined) return diagnostic;
-    const destructiveCause = copyKnownError(cause.causeDiagnostic);
+    const destructiveCause = copyKnownError(cause.causeDiagnostic, cause.responsibility);
     if (destructiveCause !== undefined) return destructiveCause;
   }
   return Object.freeze({
@@ -123,18 +108,7 @@ export function generatedCliError(cause: unknown): GeneratedCliErrorEnvelope {
 
 export function generatedCliErrorCategory(error: GeneratedCliErrorEnvelope): GeneratedCliErrorCategory {
   if (error.code === "cli.cancelled") return "cancelled";
-  if (error.code === "cli.failed") return "unexpected";
-  if (error.code.startsWith("manifest.execution.")
-      || error.code.startsWith("manifest.transfer.")
-      || error.code.startsWith("manifest.workflow.")
-      || error.code.startsWith("cli.workflow-")
-      || error.code.startsWith("cli.maintenance-")) return "operation";
-  const separator = error.code.indexOf(".");
-  const namespace = separator < 0 ? error.code : error.code.slice(0, separator);
-  if (namespace === "manifest" || DEFINITION_NAMESPACES.has(namespace)) return "definition";
-  if (OPERATION_NAMESPACES.has(namespace)) return "operation";
-  if (HOST_NAMESPACES.has(namespace)) return "host";
-  return "uncategorized";
+  return error.responsibility ?? "unexpected";
 }
 
 export function generatedCliExitCode(category: GeneratedCliErrorCategory): number {

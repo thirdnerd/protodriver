@@ -30,6 +30,7 @@ test("package author material is self-contained, unified, and target-specific", 
   assert.ok(links.checked > 17);
   assert.deepEqual((await readdir(join(packageRoot, "docs"))).sort(), [
     "author-tutorial.md",
+    "cli-reference.md",
     "declaration-reference.md",
     "linux-x64-package.md",
   ]);
@@ -47,12 +48,16 @@ test("package author material is self-contained, unified, and target-specific", 
 
   const readme = await readFile(join(packageRoot, "README.md"), "utf8");
   const tutorial = await readFile(join(packageRoot, "docs/author-tutorial.md"), "utf8");
+  const cliReference = await readFile(join(packageRoot, "docs/cli-reference.md"), "utf8");
   const reference = await readFile(join(packageRoot, "docs/declaration-reference.md"), "utf8");
   const targetGuide = await readFile(join(packageRoot, "docs/linux-x64-package.md"), "utf8");
   const thermostat = await readFile(join(packageRoot, "examples/demo-thermostat/README.md"), "utf8");
   const ceGuide = await readFile(join(packageRoot, "examples/ti84-plus-ce/README.md"), "utf8");
-  const prose = [readme, tutorial, reference, targetGuide, thermostat, ceGuide].join("\n");
+  const prose = [readme, tutorial, cliReference, reference, targetGuide, thermostat, ceGuide].join("\n");
   assert.match(readme, /\.\/bin\/pdr pack examples\/start blank-device\.pdpkg/u);
+  assert.match(readme, /\[CLI automation\s+reference\]\(docs\/cli-reference\.md\)/u);
+  assert.match(cliReference, /\| 5 \| `invocation` \|/u);
+  assert.match(cliReference, /typed failure is missing responsibility/u);
   assert.match(tutorial, /\.\.\/examples\/start\/device\.lua/u);
   assert.match(targetGuide, /glibc 2\.28/u);
   assert.match(targetGuide, /LIBUSB_ERROR_ACCESS/u);
@@ -108,12 +113,14 @@ test("Windows package author material uses only its launcher and guide", async (
   });
   assert.deepEqual((await readdir(join(packageRoot, "docs"))).sort(), [
     "author-tutorial.md",
+    "cli-reference.md",
     "declaration-reference.md",
     "win32-x64-package.md",
   ]);
   const prose = await Promise.all([
     readFile(join(packageRoot, "README.md"), "utf8"),
     readFile(join(packageRoot, "docs/author-tutorial.md"), "utf8"),
+    readFile(join(packageRoot, "docs/cli-reference.md"), "utf8"),
     readFile(join(packageRoot, "docs/win32-x64-package.md"), "utf8"),
     readFile(join(packageRoot, "examples/demo-thermostat/README.md"), "utf8"),
   ]);

@@ -10,6 +10,7 @@ import { generatedCliFailure } from "./errors.ts";
 import type { WorkerNodeAuthoredRunOptions } from "./authored-worker-client.ts";
 import { runAuthoredCli, type NodeAuthoredAcquisition } from "./authored-run.ts";
 import { pdrVersion } from "./version.ts";
+import { expectedCliError } from "./expected-error.ts";
 
 export interface PdrIo {
   readonly input: AsyncIterable<Uint8Array | string>;
@@ -55,8 +56,10 @@ Use --help or -h to print this usage without loading a device.
   if (argv[0] === "inspect") await runInspectCli(argv.slice(1), io);
   else if (argv[0] === "pack") await runPackCli(argv.slice(1), io);
   else {
-    throw new Error(
+    throw expectedCliError(
+      "cli.command.unknown",
       `unknown command ${JSON.stringify(argv[0] ?? "")}; expected run, inspect, or pack`,
+      "invocation",
     );
   }
 }

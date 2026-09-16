@@ -1,6 +1,6 @@
 import type {
   BrokerCallId, CaptureId, CaptureSummary, ChannelLease, Clock, DeviceConnection, Disposable, ControlRequest,
-  OperationId, OperationRequest, OperationResult, PdrError, PublicValue, AuthoredValueType, AuthoredPollPolicy, AuthoredClockObservation, AuthoredExpiryObservation, AuthoredInputRetirement, InputCustodySink,
+  OperationId, OperationRequest, OperationResult, PdrError, PdrFailureResponsibility, PublicValue, AuthoredValueType, AuthoredPollPolicy, AuthoredClockObservation, AuthoredExpiryObservation, AuthoredInputRetirement, InputCustodySink,
   ResourceBrokerClient, ResourceId, RpcSessionEvent, SessionRpcEvent, ReceivedChunk, WriteReceipt,
   SessionRpcRequest, SessionRpcResponse, SessionSnapshot, SubscriptionId, TransferCheckpointStore, CheckpointId, ResumeTransferRequest,
   RawTerminalExitResult, RawTerminalHandle, RawTerminalId,
@@ -35,7 +35,7 @@ import { AuthoredPollService, DEFAULT_AUTHORED_POLL_POLICY, grantPollPlans, poll
 import type { SessionRpcServer } from "./rpc.ts";
 import { parseUsbControlRequest } from "./usb-control.ts";
 import { authoredPublicValue, validateAuthoredArguments, type AuthoredDescription, type AuthoredOperation } from "./authored-admission.ts";
-import { DEFAULT_RETAINED_EFFECT_WORK, RETAINED_LUA_FUEL, NativeScratch, withNativeScratch, activeNativeScratch, nativeValue, nativeEncode,
+import { DEFAULT_RETAINED_EFFECT_WORK, RETAINED_LUA_FUEL, LuaResourceError, NativeScratch, withNativeScratch, activeNativeScratch, nativeValue, nativeEncode,
   nativeKeys, nativeEntries, nativeArray, nativeJson, nativeSort, nativeRecord } from "@protodriver/lua-vm/retained";
 
 /** Preserve traversal order and short circuiting; charge before each body. */
@@ -269,16 +269,19 @@ interface DeferredInputRange {
 }
 type Unsequenced = RpcSessionEvent extends infer T ? T extends { sequence: number } ? Omit<T, "sequence"> : never : never;
 
-function fault(code: string, message: string, details?: PublicValue): Error & { error: PdrError } {
-  return Object.assign(new Error(message), { error: { code, message, retryability: "no" as const,
+function fault(code: string, message: string, details?: PublicValue,
+  responsibility: PdrFailureResponsibility = "operation"): Error & { error: PdrError } {
+  return Object.assign(new Error(message), { error: { code, message, responsibility, retryability: "no" as const,
     ...(details === undefined ? {} : { details }) } });
 }
 function errorValue(cause: unknown): PdrError {
   if (typeof cause === "object" && cause !== null && "error" in cause) return (cause as { error: PdrError }).error;
   if (cause instanceof Error && cause.name === "TransferCheckpointError" && "diagnostic" in cause) {
     const d = cause.diagnostic as { code?: unknown; message?: unknown };
+    const responsibility = "responsibility" in cause
+      ? cause.responsibility as PdrFailureResponsibility : "operation";
     if (typeof d.code === "string" && d.code.startsWith("transfer.") && d.code.length <= 128 && typeof d.message === "string")
-      return { code: d.code, message: d.message.slice(0, 512), retryability: "no" };
+      return { code: d.code, message: d.message.slice(0, 512), responsibility, retryability: "no" };
   }
   if (cause instanceof Error && "code" in cause && typeof cause.code === "string") {
     const bounded = ["lua-vm.resource.input-limit", "lua-vm.resource.output-limit", "lua-vm.resource.allocation-limit",
@@ -286,7 +289,8 @@ function errorValue(cause: unknown): PdrError {
     const vm = cause as Error & { fuelConsumed?: unknown; vmStatus?: unknown; phase?: unknown; dispatchContext?: unknown };
     const vmFailure = typeof vm.vmStatus === "number" && Number.isSafeInteger(vm.vmStatus) && vm.vmStatus < 0
       && (vm.phase === "admission" || vm.phase === "dispatch");
-    if (bounded || (vmFailure && cause.code.startsWith("lua-vm.environment."))) {
+    if ((bounded && cause instanceof LuaResourceError)
+        || (vmFailure && cause.code.startsWith("lua-vm.environment."))) {
       // Select only bounded host fields. Do not serialize arbitrary Error
       // properties, interpret prose, or relabel an authored named failure.
       const details: Record<string, PublicValue> = {};
@@ -304,14 +308,14 @@ function errorValue(cause: unknown): PdrError {
           details.dispatch = dispatch;
         }
       }
-      return { code: cause.code, message: cause.message, retryability: bounded ? "no" : "unknown",
+      return { code: cause.code, message: cause.message, responsibility: "definition", retryability: bounded ? "no" : "unknown",
         ...(Object.keys(details).length ? { details } : {}) };
     }
   }
   if (typeof cause === "object" && cause !== null && "programFailureName" in cause) {
     const failure = cause as { programFailureName: string; programFailureDetails: PublicValue };
     return { code: "lua-vm.invocation.program-failure", message: "Authored operation failed: " + failure.programFailureName,
-      retryability: "unknown", details: { name: failure.programFailureName, details: failure.programFailureDetails } };
+      responsibility: "definition", retryability: "unknown", details: { name: failure.programFailureName, details: failure.programFailureDetails } };
   }
   return { code: "retained.execution-failed", message: String(cause), retryability: "unknown" };
 }
@@ -725,7 +729,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
         this.#delivery.publishTo(terminal.subscriptionId, { kind: "raw-terminal-bytes", terminalId: terminal.id, bytes, sequence, tUs: chunk.tUs });
       }
       if (this.#rawTerminal === terminal) await this.#closeRawTerminal(terminal.id,
-        { code: "retained.connection-ended", message: "raw-terminal input ended", retryability: "after-reconnect" });
+        { code: "retained.connection-ended", message: "raw-terminal input ended", responsibility: "operation", retryability: "after-reconnect" });
     } catch (cause) {
       if (this.#rawTerminal === terminal) await this.#closeRawTerminal(terminal.id, errorValue(cause));
     }
@@ -824,7 +828,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
       if (!declaration?.transfer) throw fault("transfer.resume.definition-mismatch", "operation has no resume binding");
       declaration = { ...declaration, binding: declaration.transfer.resumeBinding };
     }
-    if (this.#options.description && !declaration) throw fault("authored.operation.unknown", "operation is not admitted");
+    if (this.#options.description && !declaration) throw fault("authored.operation.unknown", "operation is not admitted", undefined, "invocation");
     let args: Readonly<Record<string, PublicValue>> | undefined;
     if (declaration) {
       if (nativeArray(declaration.locks).some(lock => this.#lockOwners.has(lock) || nativeList(this.#lockWaiters.values()).some(wait => wait.locks.includes(lock))))
@@ -851,7 +855,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
       if (declaration.cleanup && !this.#options.execution.startOperation)
         throw fault("authored.cleanup.unavailable", "cleanup requires an admitted binding adapter", { started: false });
       if (declaration.cleanup && (this.#tasks + this.#helperTasks + 2 > 64 || this.#timerCount() >= this.#maximumTimers))
-        throw fault("authored.cleanup.capacity", "cleanup task and deadline must be withheld before operation start");
+        throw fault("authored.cleanup.capacity", "cleanup task and deadline must be withheld before operation start", undefined, "host");
       if (declaration.cleanup && (declaration.cleanup.maximumWork + preparationWork + this.#terminalBaseWork >= this.#maximumWork
         || declaration.cleanup.maximumWork <= this.#terminalBaseWork))
         throw fault("authored.cleanup.budget", "ordinary and cleanup terminal partitions do not fit the operation grant");
@@ -868,10 +872,10 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
     // object cast can quietly become arbitrary A-E invocation argument support.
     const resources = new Set<ResourceId>();
     const outputResult = declaration?.result.kind === "file" || declaration?.result.kind === "resource";
-    if (outputResult !== (request.resultDestinationId !== undefined)) throw fault("authored.result.destination", "only a declared output result requires a host destination ID");
+    if (outputResult !== (request.resultDestinationId !== undefined)) throw fault("authored.result.destination", "only a declared output result requires a host destination ID", undefined, "invocation");
     if (request.resultDestinationId !== undefined) {
-      if (typeof request.resultDestinationId !== "string" || !request.resultDestinationId.length || request.resultDestinationId.length > 256) throw fault("authored.result.destination", "bounded destination ID required");
-      if (nativeList(this.#activations.values()).some(a => a.live && a.resources.has(request.resultDestinationId!))) throw fault("authored.result.destination-busy", "destination already delegated");
+      if (typeof request.resultDestinationId !== "string" || !request.resultDestinationId.length || request.resultDestinationId.length > 256) throw fault("authored.result.destination", "bounded destination ID required", undefined, "invocation");
+      if (nativeList(this.#activations.values()).some(a => a.live && a.resources.has(request.resultDestinationId!))) throw fault("authored.result.destination-busy", "destination already delegated", undefined, "host");
       resources.add(request.resultDestinationId);
     }
     for (const [name, supplied] of nativeEntries(declaration ? {} : request.arguments)) {
@@ -1701,7 +1705,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
         if (activation.acceptanceDone && !["result", "reschedule"].includes(kind))
           throw fault("retained.handoff-control", "acceptance supports only a bounded decision and cooperative rescheduling");
         if (kind === "result") {
-          if (activation.transfer && !activation.transfer.receipt) throw fault("authored.transfer.incomplete", "operation cannot succeed before common transfer verification");
+          if (activation.transfer && !activation.transfer.receipt) throw fault("authored.transfer.incomplete", "operation cannot succeed before common transfer verification", undefined, "definition");
           let value: PublicValue;
           if (!activation.declaration) { this.#finish(activation, "completed", this.#native(activation,()=>text(request.value))); return; }
           try {
@@ -1733,7 +1737,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
             if (activation.workFailure) throw activation.workFailure;
             if (errorValue(cause).code === "retained.helper-data-exhausted") throw cause;
             throw fault("authored.result.invalid", "returned value violates the admitted result: " + String(cause), {
-              effects: nativeList(activation.effects.values()).map(effect => ({ ...effect })), effectsEvicted: activation.effectsEvicted ?? 0, operation: activation.declaration!.id });
+              effects: nativeList(activation.effects.values()).map(effect => ({ ...effect })), effectsEvicted: activation.effectsEvicted ?? 0, operation: activation.declaration!.id }, "definition");
           }
           for (const stream of activation.streams?.values() ?? []) await stream.release();
           this.#live(activation); // a held release can settle after cancellation
@@ -1768,6 +1772,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
           this.#finish(activation, "resume-required", null, {
             code: "authored.transfer.resume-required",
             message: "Authored transfer is not finished and requires resume",
+            responsibility: "operation",
             retryability: "after-recovery",
           });
           return;
@@ -2400,7 +2405,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
       try { this.#terminal(activation, () => this.#stamp()); }
       finally {
         try { this.#dropDeadline(deadline, "expired"); }
-        finally { this.#cancel(activation.id, { code: "retained.cancelled", message: "authored operation deadline expired", retryability: "unknown", details: { cause } }); }
+        finally { this.#cancel(activation.id, { code: "retained.cancelled", message: "authored operation deadline expired", responsibility: "operation", retryability: "unknown", details: { cause } }); }
       }
     });
     this.#stamp();
@@ -3209,7 +3214,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
         this.#stamp();
       });
       if (response.settled === "failed") throw Object.assign(new Error(response.error?.message ?? "control failed"), {
-        error: { ...(response.error ?? { code: "retained.control-failed", message: "platform control failed", retryability: "unknown" }),
+        error: { ...(response.error ?? { code: "retained.control-failed", message: "platform control failed", responsibility: "operation", retryability: "unknown" }),
           details: { effectId: effect.id, submitted: true, ...(response.error?.details === undefined ? {} : { cause: response.error.details }) } } });
       return this.#native(activation, () => {
         const bytes = response.payload ?? new Uint8Array();
@@ -3331,7 +3336,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
       if (unsafe) {
         unsafeCleanup = true;
         this.#tasks--; this.#cleanupTimers--; child.terminal?.close();
-        error = { ...(error ?? { code: "authored.cleanup.skipped", message: "cleanup unavailable in unsafe execution", retryability: "no" }),
+        error = { ...(error ?? { code: "authored.cleanup.skipped", message: "cleanup unavailable in unsafe execution", responsibility: "definition", retryability: "no" }),
           details: { ...(error?.details && typeof error.details === "object" && !Array.isArray(error.details) ? error.details : {}), cleanup: { outcome: "skipped" } } };
         if (outcome === "completed") outcome = "failed";
       } else {
@@ -3353,7 +3358,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
             consumed: child.consumed, work: child.work, ...(cleanupError ? { error: { code: cleanupError.code, message: cleanupError.message,
               ...(cleanupError.details === undefined ? {} : { details: cleanupError.details }) } } : {}) };
           let terminalError = error;
-          if (cleanupError && !terminalError) terminalError = { code: "authored.cleanup.failed", message: "ordinary return did not complete protocol restoration", retryability: "no" };
+          if (cleanupError && !terminalError) terminalError = { code: "authored.cleanup.failed", message: "ordinary return did not complete protocol restoration", responsibility: "definition", retryability: "no" };
           if (terminalError) terminalError = { ...terminalError, details: {
             ...(terminalError.details && typeof terminalError.details === "object" && !Array.isArray(terminalError.details) ? terminalError.details : {}), cleanup } };
           try { this.#terminal(activation, () => this.#finishReserved(activation,
@@ -3365,7 +3370,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
         };
         const c = activation.declaration!.cleanup!;
         child.cleanupTimer = this.#options.clock.timer(c.maximumMilliseconds, () => {
-          if (child.live) this.#finish(child, "cancelled", null, { code: "authored.cleanup.timeout", message: "prepaid cleanup wall bound expired", retryability: "no" });
+          if (child.live) this.#finish(child, "cancelled", null, { code: "authored.cleanup.timeout", message: "prepaid cleanup wall bound expired", responsibility: "definition", retryability: "no" });
         });
         try { this.#native(child, () => this.#stamp()); }
         catch (cause) { this.#finish(child, "failed", null, errorValue(cause)); }
@@ -3401,7 +3406,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
     if (activation.finished) return;
     if (activation.entryDone && this.#options.description?.entry?.handoffTo && !activation.entryHandoff && outcome === "completed") {
       outcome = "failed";
-      error = { code: "authored.entry.handoff-incomplete", message: "entry returned without accepted handoff", retryability: "no" };
+      error = { code: "authored.entry.handoff-incomplete", message: "entry returned without accepted handoff", responsibility: "definition", retryability: "no" };
     }
     activation.finished = true;
     this.#revokeActivation(activation);
@@ -3429,11 +3434,12 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
       if (error) {
         activeNativeScratch()?.reserve(32 + (128 + 512) * 3);
         activeNativeScratch()?.work(2 + Math.ceil((Math.min(error.code.length, 128) + Math.min(error.message.length, 512)) / 256));
-        error = { code: error.code.slice(0, 128), message: error.message.slice(0, 512), retryability: "no",
+        error = { code: error.code.slice(0, 128), message: error.message.slice(0, 512),
+          ...(error.responsibility === undefined ? {} : { responsibility: error.responsibility }), retryability: "no",
           details: { detailsOmitted: error.details !== undefined, codeTruncated: error.code.length > 128, messageTruncated: error.message.length > 512 } };
       }
       this.#stamp();
-      activation.cleanupComplete?.(error ?? (outcome === "completed" ? undefined : { code: "authored.cleanup.cancelled", message: "cleanup revoked", retryability: "no" }));
+      activation.cleanupComplete?.(error ?? (outcome === "completed" ? undefined : { code: "authored.cleanup.cancelled", message: "cleanup revoked", responsibility: "operation", retryability: "no" }));
       return;
     }
     if (activation.handler) {
@@ -3449,8 +3455,8 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
           this.#stamp();
         }
       } else this.#stamp();
-      activation.entryDone?.(error ?? (outcome === "completed" ? undefined : { code: "authored.entry.cancelled", message: "entry revoked", retryability: "no" }));
-      activation.acceptanceDone?.(result, error ?? (outcome === "completed" ? undefined : { code: "retained.revoked", message: "acceptance revoked", retryability: "no" }));
+      activation.entryDone?.(error ?? (outcome === "completed" ? undefined : { code: "authored.entry.cancelled", message: "entry revoked", responsibility: "operation", retryability: "no" }));
+      activation.acceptanceDone?.(result, error ?? (outcome === "completed" ? undefined : { code: "retained.revoked", message: "acceptance revoked", responsibility: "operation", retryability: "no" }));
       if (outcome === "failed" && !activation.entryDone && !activation.acceptanceDone) void this.#disconnect(error);
       return;
     }
@@ -3476,7 +3482,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
     const activation = this.#activations.get(id);
     if (!activation || activation.finished || !activation.live) return;
     this.#finish(activation, "cancelled", null, error ?? { code: "retained.cancelled", message: "ordinary authority revoked",
-      retryability: "no" });
+      responsibility: "operation", retryability: "no" });
     if (activation.delivery) {
       this.#revokeDelivery(activation.delivery);
       for (const sibling of this.#activations.values()) if (sibling !== activation && sibling.delivery === activation.delivery) this.#cancel(sibling.id, error);

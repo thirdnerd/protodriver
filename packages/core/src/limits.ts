@@ -46,6 +46,7 @@ export class HostResourceLimitError extends Error {
     const error: PdrError = {
       code,
       message: `${scope} exceeds ${limit}: observed ${observed}, maximum ${maximum}`,
+      responsibility: "host",
       retryability: "no",
       details: { limit, maximum, observed, scope },
     };

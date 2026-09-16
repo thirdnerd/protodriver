@@ -96,10 +96,12 @@ function pdrError(
   message: string,
   retryability: PdrError["retryability"],
   platformCause?: PlatformCauseSnapshot,
+  responsibility: NonNullable<PdrError["responsibility"]> = "operation",
 ): PdrError {
   return {
     code,
     message,
+    responsibility,
     retryability,
     ...(platformCause === undefined ? {} : { platformCause }),
   };
@@ -120,6 +122,7 @@ export class BrowserSerialPortHeldError extends Error {
       "serial port is held by another browser tab or context",
       "after-recovery",
       causeSnapshot(cause),
+      "host",
     );
     super(error.message);
     this.name = "BrowserSerialPortHeldError";
@@ -137,6 +140,7 @@ export class BrowserSerialOpenError extends Error {
         + "Web Serial did not report whether another process holds it",
       "unknown",
       causeSnapshot(cause),
+      "host",
     );
     super(error.message);
     this.name = "BrowserSerialOpenError";

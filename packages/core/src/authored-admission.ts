@@ -1,6 +1,6 @@
 import { nativeKeys, nativeEntries, nativeValues, nativeRecord, nativeArray, nativeSort } from "@protodriver/lua-vm/retained";
 import { activeNativeScratch, nativeValue, nativeJson, nativeEncode } from "@protodriver/lua-vm/retained";
-import type { PublicValue, TypeDescriptor, OperationArgument, AuthoredDescription, AuthoredOperation, AuthoredValueType } from "@protodriver/contracts";
+import type { PdrFailure, PdrFailureResponsibility, PublicValue, TypeDescriptor, OperationArgument, AuthoredDescription, AuthoredOperation, AuthoredValueType } from "@protodriver/contracts";
 export type { AuthoredDescription, AuthoredOperation, AuthoredValueType } from "@protodriver/contracts";
 import { SEMANTIC_UNIT_IDENTIFIERS } from "@protodriver/contracts";
 import { DEFAULT_HOST_RESOURCE_LIMITS } from "@protodriver/contracts/limits";
@@ -13,7 +13,15 @@ import { AUTHORED_CAPABILITY_NAMES } from "./authored-capabilities.ts";
 
 export class AuthoredAdmissionError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) { super(code + ": " + message); this.code = code; }
+  readonly responsibility: PdrFailureResponsibility;
+  readonly error: PdrFailure;
+  constructor(code: string, message: string, responsibility: PdrFailureResponsibility = "definition") {
+    super(code + ": " + message);
+    this.name = "AuthoredAdmissionError";
+    this.code = code;
+    this.responsibility = responsibility;
+    this.error = Object.freeze({ code, message, responsibility, retryability: "no" });
+  }
 }
 const bad = (path: string, detail: string): never => { throw new AuthoredAdmissionError("authored.declaration.invalid", path + ": " + detail); };
 function record(value: unknown, path: string): Record<string, unknown> {
@@ -483,28 +491,29 @@ const codec = new DefaultValueCodec();
 export function validateAuthoredTopologyGrant(description: AuthoredDescription, channelId: string,
   capabilities: Readonly<Record<string, { readonly available: boolean; readonly limitation: string }>>): void {
   for (const handler of description.handlers ?? []) {
-    if (handler.event.channelId !== channelId) throw new AuthoredAdmissionError("authored.handler.channel-unavailable", "host has not granted handler channel " + handler.event.channelId);
+    if (handler.event.channelId !== channelId) throw new AuthoredAdmissionError("authored.handler.channel-unavailable", "host has not granted handler channel " + handler.event.channelId, "host");
     for (const requirement of handler.requires) if (!capabilities[requirement]?.available)
-      throw new AuthoredAdmissionError("authored.handler.capability-unavailable", "handler " + handler.id + " requires " + requirement);
+      throw new AuthoredAdmissionError("authored.handler.capability-unavailable", "handler " + handler.id + " requires " + requirement, "host");
   }
 }
-export function authoredPublicValue(value: unknown, schema: AuthoredValueType): PublicValue {
+export function authoredPublicValue(value: unknown, schema: AuthoredValueType,
+  responsibility: PdrFailureResponsibility = "definition"): PublicValue {
   activeNativeScratch()?.node();
-  const fail = (message: string): never => { throw new AuthoredAdmissionError("authored.value.invalid", message); };
+  const fail = (message: string): never => { throw new AuthoredAdmissionError("authored.value.invalid", message, responsibility); };
   let result: PublicValue;
   if (schema.kind === "null") { if (value !== null) fail("null required"); result = null; }
   else if (schema.kind === "record") {
     if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) fail("record required");
     const fields = schema.fields!, entries = nativeEntries(value as Record<string, unknown>);
     if (entries.length !== nativeKeys(fields).length || nativeArray(entries).some(([key]) => !Object.hasOwn(fields, key))) fail("record field set differs");
-    result = nativeRecord(nativeArray(entries).map(([key, member]) => [key, authoredPublicValue(member, fields[key]!)]));
+    result = nativeRecord(nativeArray(entries).map(([key, member]) => [key, authoredPublicValue(member, fields[key]!, responsibility)]));
   } else if (schema.kind === "array") {
     if (!Array.isArray(value)) fail("array required");
-    result = nativeArray((value as unknown[])).map(member => authoredPublicValue(member, schema.item!));
+    result = nativeArray((value as unknown[])).map(member => authoredPublicValue(member, schema.item!, responsibility));
   } else if (schema.kind === "variant") {
     const v = value as { kind?: string; tag?: string; value?: unknown };
     if (!v || v.kind !== "variant" || typeof v.tag !== "string" || !Object.hasOwn(schema.variants!, v.tag) || nativeSort(nativeKeys(v)).join(",") !== "kind,tag,value") fail("declared tagged variant required");
-    result = { kind: "variant", tag: v.tag!, value: authoredPublicValue(v.value, schema.variants![v.tag!]!) };
+    result = { kind: "variant", tag: v.tag!, value: authoredPublicValue(v.value, schema.variants![v.tag!]!, responsibility) };
   } else {
     let internal = value;
     if (schema.kind === "decimal" && (typeof value !== "string" || !/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value) || /^-0(?:\.0+)?$/.test(value))) fail("exact finite decimal text required");
@@ -524,19 +533,19 @@ export function authoredPublicValue(value: unknown, schema: AuthoredValueType): 
   return result;
 }
 export function validateAuthoredArguments(operation: AuthoredOperation, supplied: Readonly<Record<string, OperationArgument>>): Readonly<Record<string, PublicValue>> {
-  if (nativeKeys(supplied).length !== nativeKeys(operation.arguments).length) throw new AuthoredAdmissionError("authored.arguments.invalid", "argument population differs");
+  if (nativeKeys(supplied).length !== nativeKeys(operation.arguments).length) throw new AuthoredAdmissionError("authored.arguments.invalid", "argument population differs", "invocation");
   return Object.freeze(nativeRecord(nativeArray(nativeEntries(operation.arguments)).flatMap(([key, schema]) => {
     const argument = supplied[key];
     if (schema.kind === "byte-source" || schema.kind === "stream-source") {
       if (!argument || argument.kind !== "resource" || typeof argument.id !== "string" || !argument.id.length || argument.id.length > 256)
-        throw new AuthoredAdmissionError("authored.arguments.invalid", "source resource required: " + key);
+        throw new AuthoredAdmissionError("authored.arguments.invalid", "source resource required: " + key, "invocation");
       return [];
     }
-    if (!argument || argument.kind !== "value") throw new AuthoredAdmissionError("authored.arguments.invalid", "value argument required: " + key);
+    if (!argument || argument.kind !== "value") throw new AuthoredAdmissionError("authored.arguments.invalid", "value argument required: " + key, "invocation");
     // fromPublic is deliberately used before toPublic: tagged public integers
     // are not interchangeable with arbitrary author records.
     const internal = decodeAuthoredArgument(argument.value, schema);
-    return [[key, authoredPublicValue(internal, schema)]];
+    return [[key, authoredPublicValue(internal, schema, "invocation")]];
   })));
 }
 

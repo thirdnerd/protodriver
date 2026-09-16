@@ -4,7 +4,7 @@ import { activeNativeScratch, nativeEncode } from "@protodriver/lua-vm/retained"
 // UTF-8 meaning; byte values never pass through a text encoder/decoder.
 export function boundedBytes(value: Uint8Array, maximum = 256): Uint8Array {
   if (!(value instanceof Uint8Array) || value.length > maximum) throw Object.assign(new Error("bounded octets required"), {
-    error: { code: "retained.invalid-effect", message: "bounded octets required", retryability: "no" },
+    error: { code: "retained.invalid-effect", message: "bounded octets required", responsibility: "definition", retryability: "no" },
   });
   activeNativeScratch()?.reserve(8 + value.length);
   activeNativeScratch()?.work(1 + Math.ceil(value.length / 256));

@@ -41,6 +41,7 @@ import type {
   SubscriptionOptions,
   WriteReceipt,
 } from "@protodriver/contracts";
+import { isPdrFailureResponsibility } from "@protodriver/contracts";
 import { RealClock } from "@protodriver/core/clock";
 import {
   CanonicalSizeAccounting,
@@ -107,6 +108,7 @@ function workerLostPdrError(cause?: unknown): PdrError {
   return {
     code: "session.worker-lost",
     message: "the session worker was lost; reconnect is required",
+    responsibility: "operation",
     retryability: "after-reconnect",
     ...(cause instanceof Error
       ? {
@@ -126,6 +128,33 @@ export class SessionWorkerLostError extends SessionRpcError {
     super(workerLostPdrError(cause));
     this.name = "SessionWorkerLostError";
   }
+}
+
+function explicitBoundaryError(cause: unknown): PdrError | undefined {
+  if (typeof cause !== "object" || cause === null) return undefined;
+  const wrapper = cause as Readonly<Record<string, unknown>>;
+  for (const member of [wrapper.error, wrapper.diagnostic, wrapper.causeDiagnostic]) {
+    if (typeof member !== "object" || member === null) continue;
+    const value = member as Readonly<Record<string, unknown>>;
+    if (typeof value.code !== "string" || typeof value.message !== "string") continue;
+    const retryability = value.retryability === "no" || value.retryability === "after-reconnect"
+      || value.retryability === "after-recovery" || value.retryability === "unknown"
+      ? value.retryability : "no";
+    const responsibility = isPdrFailureResponsibility(value.responsibility)
+      ? value.responsibility
+      : isPdrFailureResponsibility(wrapper.responsibility) ? wrapper.responsibility : undefined;
+    return {
+      code: value.code,
+      message: value.message,
+      retryability,
+      ...(responsibility === undefined ? {} : { responsibility }),
+      ...(value.details === undefined
+        ? {} : { details: value.details as NonNullable<PdrError["details"]> }),
+      ...(value.platformCause === undefined
+        ? {} : { platformCause: value.platformCause as NonNullable<PdrError["platformCause"]> }),
+    };
+  }
+  return undefined;
 }
 
 class AsyncMessageQueue<T> implements AsyncIterable<T> {
@@ -487,7 +516,7 @@ export function serveSessionRpc(
       },
       (cause) => {
         if (closed) return;
-        const error: PdrError = {
+        const error: PdrError = explicitBoundaryError(cause) ?? {
           code: "rpc.handler-failed",
           message: cause instanceof Error ? cause.message : String(cause),
           retryability: "unknown",

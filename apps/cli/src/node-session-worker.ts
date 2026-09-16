@@ -40,14 +40,19 @@ try {
   if (!isAuthoredWorkerSessionInput(data.request.generatedLua)) throw new Error("authored worker binding is missing");
   server = await createNodeAuthoredWorkerSession(data.request, services);
 } catch (cause) {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  const code = message.match(/^(authored\.[a-z0-9.-]+)/)?.[1] ?? "session.worker-initialization";
+  const reported = typeof cause === "object" && cause !== null && "error" in cause
+    ? (cause as { readonly error?: import("@protodriver/contracts").PdrError }).error : undefined;
+  const error = reported ?? {
+    code: "session.worker-initialization",
+    message: cause instanceof Error ? cause.message : String(cause),
+    retryability: "no" as const,
+    platformCause: snapshotPlatformCause(typeof cause === "object" && cause !== null ? cause : String(cause)),
+  };
   server = {
     events: { async *[Symbol.asyncIterator]() { /* failed workers have no lifecycle events */ } },
     async handle(request: import("@protodriver/contracts").SessionRpcRequest) {
       return { kind: "error" as const, method: request.kind, callId: request.callId,
-        error: { code, message, retryability: "no" as const,
-          platformCause: snapshotPlatformCause(typeof cause === "object" && cause !== null ? cause : String(cause)) } };
+        error };
     },
   };
 }

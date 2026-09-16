@@ -1,6 +1,7 @@
 import type { AuthoredOperation, DeviceSessionClient, HostByteSink, OperationArgument, OperationResult, ResourceId } from "@protodriver/contracts";
 import { requireAuthoredOutput } from "@protodriver/control-model";
 import { open } from "node:fs/promises";
+import { generatedCliExpectedError } from "./errors.ts";
 
 export interface SavedAuthoredOutput {
   readonly outcome: OperationResult;
@@ -14,11 +15,21 @@ export async function saveAuthoredOutput(client: DeviceSessionClient, operation:
   register: (sink: HostByteSink) => Promise<ResourceId>): Promise<SavedAuthoredOutput> {
   const model = operation.result;
   if (model.kind !== "file" && model.kind !== "resource") throw new Error("operation has no declared resource result");
-  if (model.kind === "file" && !path.endsWith("." + model.suggestedExtension)) throw new Error("save path does not match declared file extension");
-  const file = await open(path, "wx", 0o600);
+  if (model.kind === "file" && !path.endsWith("." + model.suggestedExtension))
+    throw generatedCliExpectedError("cli.output.extension-mismatch", "save path does not match declared file extension", "invocation");
+  let file;
+  try { file = await open(path, "wx", 0o600); }
+  catch (cause) {
+    const code = cause instanceof Error && "code" in cause ? (cause as NodeJS.ErrnoException).code : undefined;
+    throw generatedCliExpectedError(code === "EEXIST" || code === "ENOENT" || code === "ENOTDIR"
+      ? "cli.output.path-invalid" : "cli.filesystem.failed",
+    code === "EEXIST" ? `output path already exists: ${path}` : `cannot create output path ${path}`,
+    code === "EEXIST" || code === "ENOENT" || code === "ENOTDIR" ? "invocation" : "host", cause);
+  }
   let bytes = 0, closed = false;
   const sink: HostByteSink = { async write(data) {
-    if (closed || bytes + data.length > model.maximumBytes) throw new Error("output sink bound exceeded");
+    if (closed || bytes + data.length > model.maximumBytes)
+      throw generatedCliExpectedError("authored.result.byte-bound", "output sink bound exceeded", "definition");
     await file.writeFile(data); bytes += data.length;
   }, async close() { if (!closed) { closed = true; await file.close(); } } };
   try {

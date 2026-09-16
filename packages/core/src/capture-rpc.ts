@@ -32,6 +32,7 @@ function captureError(code: string, message: string, cause?: unknown): PdrError 
   return {
     code,
     message,
+    responsibility: "host",
     retryability: "no",
     ...(platformCause === undefined ? {} : { platformCause }),
   };

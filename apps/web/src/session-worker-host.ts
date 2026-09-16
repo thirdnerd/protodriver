@@ -1,6 +1,6 @@
 import type {
   AuthoredConnectionProfile, AuthoredDescription, CandidateId, CandidateRequest,
-  ClientId, ClientLeasePolicy, ConnectRequest, DeviceConnection, PdrError,
+  ClientId, ClientLeasePolicy, ConnectRequest, DeviceConnection, PdrError, PdrFailureResponsibility,
   PhysicalDeviceIdentity, ResourceBrokerClient, SerializableCandidate,
   SessionRpcEvent, SessionRpcRequest, SessionRpcResponse, SessionSnapshot,
   SubscriptionId, TransferCheckpointStore,
@@ -129,7 +129,7 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
         || this.#captureLimits.maximumCaptureQueueBytes <= 0
         || !Number.isSafeInteger(this.#captureLimits.maximumCaptureInMemoryBytes)
         || this.#captureLimits.maximumCaptureInMemoryBytes <= this.#captureLimits.maximumCaptureQueueBytes) {
-      throw new RangeError("invalid browser capture limits");
+      throw workerError("web.capture.limits-invalid", "invalid browser capture limits", "host");
     }
   }
 
@@ -137,14 +137,22 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
   get wireRecordsBeforeFailure(): number { return 0; }
 
   async admit(deviceBytes: Uint8Array): Promise<BrowserLoadedDevice> {
-    if (this.#module !== undefined) throw new Error("replace the authored session before loading another package");
+    if (this.#module !== undefined) throw workerError(
+      "web.package.session-active",
+      "replace the authored session before loading another package",
+      "invocation",
+    );
     const artifact = this.#authoredArtifact
       ?? (await import("../../../packages/lua-vm/artifacts/protodriver-retained-v2.wasm")).default;
     const archive = Uint8Array.from(deviceBytes);
     const module = await admitAuthoredModule(archive, artifact);
     const grant = await this.#authoredAcquisition?.(module.description);
     if (grant !== undefined) {
-      if (!this.#resourceBroker || !this.#captureDestinationAdapter) throw new Error("authored product services required");
+      if (!this.#resourceBroker || !this.#captureDestinationAdapter) throw workerError(
+        "web.services.required",
+        "authored product services required",
+        "host",
+      );
       const created = await createAuthoredSession(archive, artifact, {
         ...grant,
         platform: "web",
@@ -198,7 +206,7 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
       if (request.kind === "attach-client") {
         if (!this.#clients.has(request.params.clientId)
             && this.#clients.size >= DEFAULT_HOST_RESOURCE_LIMITS.maximumClientsPerSession) {
-          throw new Error("maximum clients per session exceeded");
+          throw workerError("web.clients.limit", "maximum clients per session exceeded", "host");
         }
         this.#clients.add(request.params.clientId);
         this.#attachRequests.set(request.params.clientId, request);
@@ -209,13 +217,21 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
         case "resolve-candidates": return ok(request, await this.#resolveCandidates(request.params.request));
         case "connect": {
           if (this.#module?.description.connectionProfiles === undefined) {
-            throw new Error("authored.acquisition.required: package admitted; execution needs an explicit host-supplied connection grant");
+            throw workerError(
+              "authored.acquisition.required",
+              "package admitted; execution needs an explicit host-supplied connection grant",
+              "host",
+            );
           }
           const server = await this.#createDeferredServer(request.params.request);
           return server.handle(request);
         }
         case "start-capture":
-          if (this.#pendingCapture !== undefined) throw new Error("a capture is already awaiting authored session construction");
+          if (this.#pendingCapture !== undefined) throw workerError(
+            "web.capture.pending",
+            "a capture is already awaiting authored session construction",
+            "invocation",
+          );
           return new Promise((settle) => { this.#pendingCapture = { request, settle }; });
         case "subscribe":
           this.#subscriptionRequests.set(request.params.subscriptionId, request);
@@ -229,7 +245,11 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
           this.#attachRequests.delete(request.params.clientId);
           return ok(request, null);
         case "get-snapshot": return ok(request, this.#snapshot());
-        default: throw new Error("authored.acquisition.required: select an admitted mode, profile and authorized candidate before execution");
+        default: throw workerError(
+          "authored.acquisition.required",
+          "select an admitted mode, profile and authorized candidate before execution",
+          "invocation",
+        );
       }
     } catch (cause) {
       return failure(request, cause);
@@ -240,7 +260,7 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
     const module = this.#requireModule();
     const modeId = request.mode ?? module.description.modes[0];
     if (modeId === undefined || !module.description.modes.includes(modeId)) {
-      throw workerError("acquisition.mode-mismatch", "mode selection is required");
+      throw workerError("acquisition.mode-mismatch", "mode selection is required", "invocation");
     }
     const declared = Object.entries(module.description.connectionProfiles ?? {})
       .filter(([, profile]) => profile.modes.includes(modeId));
@@ -249,10 +269,10 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
       ? declared
       : declared.filter(([profileId]) => profileId === request.profile);
     if (request.profile === undefined && profiles.length !== 1) {
-      throw workerError("acquisition.profile-required", `mode ${modeId} requires an admitted profile selection`);
+      throw workerError("acquisition.profile-required", `mode ${modeId} requires an admitted profile selection`, "invocation");
     }
     if (request.profile !== undefined && profiles.length === 0) {
-      throw workerError("acquisition.profile-mismatch", `profile ${request.profile} is not admitted for ${modeId}`);
+      throw workerError("acquisition.profile-mismatch", `profile ${request.profile} is not admitted for ${modeId}`, "invocation");
     }
     const entries = (await Promise.all(profiles.map(([profileId, profile]) =>
       this.#candidateEntries(modeId, { ...profile, id: profileId }, request.grant)))).flat();
@@ -277,12 +297,12 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
   ): Promise<CandidateEntry[]> {
     const filters = grant === undefined ? profile.acquisitionFilters : grant.matchedFilters.map((index) => {
       if (!Number.isSafeInteger(index) || index < 0 || index >= profile.acquisitionFilters.length) {
-        throw workerError("acquisition.grant-filter-mismatch", `grant filter ${index} is outside admitted profile ${profile.id}`);
+        throw workerError("acquisition.grant-filter-mismatch", `grant filter ${index} is outside admitted profile ${profile.id}`, "host");
       }
       return profile.acquisitionFilters[index]!;
     });
     if (grant !== undefined && filters.length === 0) {
-      throw workerError("acquisition.grant-filter-mismatch", `grant does not cover admitted profile ${profile.id}`);
+      throw workerError("acquisition.grant-filter-mismatch", `grant does not cover admitted profile ${profile.id}`, "host");
     }
     const authorized = { ...profile, acquisitionFilters: filters } as BrowserPhysicalProfile;
     return isBrowserSerialProfile(authorized)
@@ -372,17 +392,17 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
 
   async #createDeferredServer(request: ConnectRequest): Promise<SessionRpcServer> {
     if (this.#authoredAcquisitionBinding?.kind !== "permission-broker-v1") {
-      throw workerError("authored.acquisition.stock-unbound", "ordinary authored acquisition requires the clone-safe bootstrap binding");
+      throw workerError("authored.acquisition.stock-unbound", "ordinary authored acquisition requires the clone-safe bootstrap binding", "host");
     }
     const module = this.#requireModule();
     const archive = this.#archive!;
     const artifact = this.#authoredArtifact
       ?? (await import("../../../packages/lua-vm/artifacts/protodriver-retained-v2.wasm")).default;
     if (request.mode === undefined || request.profile === undefined || request.candidateId === undefined || request.grant === undefined) {
-      throw workerError("authored.acquisition.selection-required", "grant, mode, profile and candidate are required before authored session construction");
+      throw workerError("authored.acquisition.selection-required", "grant, mode, profile and candidate are required before authored session construction", "invocation");
     }
     if (!module.description.modes.includes(request.mode)) {
-      throw workerError("authored.acquisition.mode-mismatch", `mode ${request.mode} is not admitted`);
+      throw workerError("authored.acquisition.mode-mismatch", `mode ${request.mode} is not admitted`, "invocation");
     }
     const profile = module.description.connectionProfiles?.[request.profile];
     if (profile === undefined || !profile.modes.includes(request.mode)) {
@@ -391,12 +411,16 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
     await this.#resolveCandidates({ mode: request.mode, profile: request.profile, grant: request.grant });
     const selected = this.#candidates.get(request.candidateId);
     if (selected === undefined || selected.modeId !== request.mode || selected.profileId !== request.profile) {
-      throw workerError("authored.acquisition.candidate-mismatch", `candidate ${request.candidateId} is not authorized for ${request.mode}/${request.profile}`);
+      throw workerError("authored.acquisition.candidate-mismatch", `candidate ${request.candidateId} is not authorized for ${request.mode}/${request.profile}`, "invocation");
     }
     if (this.#candidateGrants.get(request.candidateId) !== request.grant.grantId) {
-      throw workerError("authored.acquisition.grant-mismatch", `candidate ${request.candidateId} was not resolved under grant ${request.grant.grantId}`);
+      throw workerError("authored.acquisition.grant-mismatch", `candidate ${request.candidateId} was not resolved under grant ${request.grant.grantId}`, "host");
     }
-    if (!this.#resourceBroker || !this.#captureDestinationAdapter) throw new Error("authored product services required");
+    if (!this.#resourceBroker || !this.#captureDestinationAdapter) throw workerError(
+      "web.services.required",
+      "authored product services required",
+      "host",
+    );
     const pollPolicy = grantRequiredPollPlans(pollPlans(module.description), DEFAULT_AUTHORED_POLL_POLICY,
       { minimumIntervalMs: 200, maximumNominalPollsPerSecond: 5 });
     const pendingCapture = this.#pendingCapture;
@@ -420,7 +444,7 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
       });
       for (const replay of [...this.#attachRequests.values(), ...this.#subscriptionRequests.values()]) {
         const response = await created.server.handle(replay);
-        if (response.kind === "error") throw new Error(`authored RPC replay failed: ${response.error.message}`);
+        if (response.kind === "error") throw Object.assign(new Error(response.error.message), { error: response.error });
       }
       if (pendingCapture !== undefined) {
         const response = await created.server.handle(pendingCapture.request);
@@ -466,11 +490,19 @@ export class BrowserSessionWorkerHost implements SessionRpcServer {
   }
 
   #requireAttached(): void {
-    if (this.#clients.size === 0) throw new Error("attach-client is required before session calls");
+    if (this.#clients.size === 0) throw workerError(
+      "web.client.required",
+      "attach-client is required before session calls",
+      "invocation",
+    );
   }
 
   #requireModule(): AdmittedAuthoredModule {
-    if (this.#module === undefined || this.#loaded === undefined) throw new Error("no authored package is loaded in the worker");
+    if (this.#module === undefined || this.#loaded === undefined) throw workerError(
+      "web.package.required",
+      "no authored package is loaded in the worker",
+      "invocation",
+    );
     return this.#module;
   }
 }
@@ -495,15 +527,17 @@ function isBrowserSerialProfile(profile: BrowserPhysicalProfile): profile is Bro
   return profile.transport.kind === "serial";
 }
 
-export function workerError(code: string, message: string, cause?: unknown): Error & { readonly error: PdrError } {
+export function workerError(code: string, message: string, responsibility?: PdrFailureResponsibility,
+  cause?: unknown): Error & { readonly error: PdrError } {
   const error: PdrError = { code, message, retryability: "no",
+    ...(responsibility === undefined ? {} : { responsibility }),
     ...(cause === undefined ? {} : { platformCause: snapshotCause(cause) }) };
-  return Object.assign(new Error(message), { error });
+  return Object.assign(new Error(`${code}: ${message}`), { error });
 }
 
 export function serializeWorkerError(cause: unknown): PdrError {
   if (cause instanceof TransferCheckpointError) {
-    return { code: cause.diagnostic.code, message: cause.diagnostic.message, retryability: "no",
+    return { code: cause.diagnostic.code, message: cause.diagnostic.message, responsibility: cause.responsibility, retryability: "no",
       details: cause.diagnostic as unknown as NonNullable<PdrError["details"]> };
   }
   if (typeof cause === "object" && cause !== null && "error" in cause) return (cause as { readonly error: PdrError }).error;
@@ -516,7 +550,10 @@ export function serializeWorkerError(cause: unknown): PdrError {
       const retryability = value.retryability === "no" || value.retryability === "after-reconnect"
         || value.retryability === "after-recovery" || value.retryability === "unknown"
         ? value.retryability : "no";
+      const responsibility = "responsibility" in cause
+        ? (cause as { readonly responsibility?: PdrFailureResponsibility }).responsibility : undefined;
       return { code: value.code, message: value.message, retryability,
+        ...(responsibility === undefined ? {} : { responsibility }),
         details: ("details" in diagnostic
           ? (diagnostic as { readonly details: NonNullable<PdrError["details"]> }).details
           : diagnostic) as NonNullable<PdrError["details"]> };

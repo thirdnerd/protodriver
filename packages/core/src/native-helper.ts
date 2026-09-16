@@ -7,7 +7,7 @@ import type { Clock, Disposable } from "@protodriver/contracts";
 const bufferMetadataBytes = new CanonicalSizeAccounting().rpcMessageBytes({ id: 0, capacity: 0, usedLength: 0 });
 
 export function nativeFault(code: string, message: string): Error {
-  return Object.assign(new Error(message), { error: { code, message, retryability: "no" } });
+  return Object.assign(new Error(message), { error: { code, message, responsibility: "definition", retryability: "no" } });
 }
 export interface NativeHelperContext {
   /** Must precede each adapted native loop body, including nested loops. */

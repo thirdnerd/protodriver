@@ -1,5 +1,5 @@
 import { nativeKeys, nativeEntries, nativeValues, nativeRecord, nativeArray, nativeSort } from "./native-account.ts";
-import type { LuaValueAbiV1ValueKind } from "@protodriver/contracts";
+import type { LuaValueAbiV1ValueKind, PdrError } from "@protodriver/contracts";
 import { activeNativeScratch } from "./native-account.ts";
 import { luaResourceError } from "./resource-policy.ts";
 
@@ -17,9 +17,13 @@ export interface LuaAdmissionResult {
 }
 
 export function sourceMemberAdmissionError(member: string, reason: "missing" | "initialization-failed"): Error {
-  const error = new Error(`lua-vm.admission.source-member: ${member} ${reason}`);
+  const code = "lua-vm.admission.source-member", message = `${member} ${reason}`;
+  const error = new Error(`${code}: ${message}`);
+  const boundary: PdrError = { code, message, responsibility: "definition", retryability: "no",
+    details: { sourceMember: member, sourceMemberFailure: reason } };
   Object.defineProperties(error, {
-    code: { value: "lua-vm.admission.source-member", enumerable: true },
+    code: { value: code, enumerable: true },
+    error: { value: boundary },
     sourceMember: { value: member, enumerable: true },
     sourceMemberFailure: { value: reason, enumerable: true },
     phase: { value: "admission", enumerable: true },

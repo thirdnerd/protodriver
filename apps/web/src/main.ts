@@ -10,7 +10,7 @@ import type {
   SerializableCandidate,
   SessionSubscription,
 } from "@protodriver/contracts";
-import { SessionRpcError } from "@protodriver/core/rpc";
+import { browserExpectedError, browserFailure, browserFailureText } from "./errors.ts";
 import { installBrowserReleaseHooks } from "./lifecycle.ts";
 import { HexWindow } from "./hex-window.ts";
 import { BrowserPackageStore } from "./package-storage.ts";
@@ -191,7 +191,11 @@ void installPackageCatalog({
   document,
   fetcher: url => fetch(url),
   beforeLoad: () => {
-    if (connected) throw new Error("disconnect before loading another device");
+    if (connected) throw browserExpectedError(
+      "web.package.connected",
+      "disconnect before loading another device",
+      "invocation",
+    );
     clearError();
     setBusy(true, "loading package");
   },
@@ -208,13 +212,17 @@ async function loadSelectedPackage(): Promise<void> {
   const file = packageInput.files?.[0];
   if (file === undefined) return;
   if (connected) {
-    showError(new Error("disconnect before loading another device"));
+    showError(browserExpectedError("web.package.connected", "disconnect before loading another device", "invocation"));
     return;
   }
   clearError();
   setBusy(true, "loading package");
   try {
-    const bytes = new Uint8Array(await file.arrayBuffer());
+    let bytes: Uint8Array;
+    try { bytes = new Uint8Array(await file.arrayBuffer()); }
+    catch (cause) {
+      throw browserExpectedError("web.file.read-failed", `could not read ${file.name}`, "host", cause);
+    }
     await loadAndRememberPackage(bytes);
   } catch (cause) {
     clearLoadedDevice();
@@ -227,7 +235,12 @@ async function loadSelectedPackage(): Promise<void> {
 async function loadAndRememberPackage(bytes: Uint8Array): Promise<void> {
   await loadAndRememberPackageBytes(bytes, {
     loadDeviceBytes,
-    remember: value => packageStore.add(value),
+    remember: async (value) => {
+      try { return await packageStore.add(value); }
+      catch (cause) {
+        throw browserExpectedError("web.package-store.write-failed", "could not remember the package", "host", cause);
+      }
+    },
     refreshRemembered: refreshStoredPackages,
     setRememberedStatus: message => { storedPackageStatus.textContent = message; },
     reportRememberError: showError,
@@ -236,7 +249,7 @@ async function loadAndRememberPackage(bytes: Uint8Array): Promise<void> {
 
 async function loadStoredPackage(): Promise<void> {
   if (connected) {
-    showError(new Error("disconnect before loading another device"));
+    showError(browserExpectedError("web.package.connected", "disconnect before loading another device", "invocation"));
     return;
   }
   const id = selectedStoredPackageId();
@@ -244,11 +257,23 @@ async function loadStoredPackage(): Promise<void> {
   setBusy(true, "loading package");
   storedPackageStatus.textContent = `Loading package ${id}.`;
   try {
-    const bytes = await packageStore.read(id);
-    if (bytes === null) throw new Error(`stored package ${id} no longer exists`);
+    let bytes: Uint8Array | null;
+    try { bytes = await packageStore.read(id); }
+    catch (cause) {
+      throw browserExpectedError("web.package-store.read-failed", `could not read stored package ${id}`, "host", cause);
+    }
+    if (bytes === null) throw browserExpectedError(
+      "web.package-store.missing",
+      `stored package ${id} no longer exists`,
+      "host",
+    );
     const admitted = await loadDeviceBytes(bytes);
     if (admitted.admission.kind !== "pdpkg") {
-      throw new Error(`stored package ${id} did not contain a pdpkg archive`);
+      throw browserExpectedError(
+        "web.package-store.invalid",
+        `stored package ${id} did not contain a pdpkg archive`,
+        "host",
+      );
     }
     storedPackageStatus.textContent = `Package ${id} loaded.`;
   } catch (cause) {
@@ -265,7 +290,10 @@ async function removeStoredPackage(): Promise<void> {
   clearError();
   setBusy(true, "forgetting package");
   try {
-    await packageStore.remove(id);
+    try { await packageStore.remove(id); }
+    catch (cause) {
+      throw browserExpectedError("web.package-store.remove-failed", `could not remove stored package ${id}`, "host", cause);
+    }
     await refreshStoredPackages();
     storedPackageStatus.textContent = `Forgot package ${id}.`;
   } catch (cause) {
@@ -306,7 +334,11 @@ function clearLoadedDevice(): void {
 }
 
 async function refreshStoredPackages(preferredId?: number): Promise<void> {
-  const packages = await packageStore.list();
+  let packages: Awaited<ReturnType<BrowserPackageStore["list"]>>;
+  try { packages = await packageStore.list(); }
+  catch (cause) {
+    throw browserExpectedError("web.package-store.list-failed", "could not list stored packages", "host", cause);
+  }
   storedPackageSelect.replaceChildren();
   if (packages.length === 0) {
     appendOption(storedPackageSelect, "", "Nothing remembered yet");
@@ -331,7 +363,11 @@ async function refreshStoredPackages(preferredId?: number): Promise<void> {
 
 function selectedStoredPackageId(): number {
   const id = Number(storedPackageSelect.value);
-  if (!Number.isSafeInteger(id) || id < 1) throw new Error("select a stored package first");
+  if (!Number.isSafeInteger(id) || id < 1) throw browserExpectedError(
+    "web.package-store.selection-required",
+    "select a stored package first",
+    "invocation",
+  );
   return id;
 }
 
@@ -379,14 +415,18 @@ async function grantAndConnect(): Promise<void> {
     // Choosers stay on the main thread and inside this user-gesture turn. The
     // worker can only enumerate grants already made here.
     if (profile.transport === "serial") {
-      if (serial === undefined) throw new Error("Web Serial is unavailable");
+      if (serial === undefined) throw browserExpectedError(
+        "web.serial.unavailable",
+        "Web Serial is unavailable",
+        "host",
+      );
       const port = await serial.requestPort(serialChooserFilters(profile.acquisitionFilters));
       const info = port.getInfo();
       activeGrant = browserGrant(profile.acquisitionFilters.map((filter) =>
         (filter.vendorId === undefined || filter.vendorId === info.usbVendorId)
         && (filter.productId === undefined || filter.productId === info.usbProductId)));
     } else {
-      if (usb === undefined) throw new Error("WebUSB is unavailable");
+      if (usb === undefined) throw browserExpectedError("web.usb.unavailable", "WebUSB is unavailable", "host");
       const device = await usb.requestDevice(usbChooserFilters(profile.acquisitionFilters));
       activeGrant = browserGrant(profile.acquisitionFilters.map((filter) =>
         usbFilterMatches(filter, device)));
@@ -416,7 +456,11 @@ async function connectCandidate(candidateId: string, profile: BrowserWorkerProfi
       ...(activeGrant === undefined ? {} : { grant: activeGrant }),
     }))
       .find((value) => value.candidateId === candidateId && value.matchedProfileId === profile.profileId);
-    if (candidate === undefined) throw new Error(`candidate ${candidateId} is no longer authorized`);
+    if (candidate === undefined) throw browserExpectedError(
+      "web.acquisition.candidate-expired",
+      `candidate ${candidateId} is no longer authorized`,
+      "operation",
+    );
     // Unique regression: authored entry liveness can precede capture when the
     // browser waits to arm recording until after connect has completed.
     let resolveCaptureIssued!:()=>void;
@@ -586,7 +630,11 @@ function exportCapture(): void {
 
 function selectedProfile(): BrowserWorkerProfile {
   const profile = requireLoaded().profiles.find(({ modeId, profileId }) => modeId === modeSelect.value && profileId === profileSelect.value);
-  if (profile === undefined) throw new Error("select a declared connection profile");
+  if (profile === undefined) throw browserExpectedError(
+    "web.acquisition.profile-required",
+    "select a declared connection profile",
+    "invocation",
+  );
   return profile;
 }
 
@@ -638,7 +686,11 @@ function renderRawTerminal(): void {
 }
 
 async function openRawTerminal(): Promise<{ readonly exitRequirement: NonNullable<typeof rawTerminalExitRequirement> }> {
-  if (!connected || rawTerminalActive) throw new Error("raw terminal cannot open in the current session state");
+  if (!connected || rawTerminalActive) throw browserExpectedError(
+    "web.terminal.state",
+    "raw terminal cannot open in the current session state",
+    "invocation",
+  );
   clearError();
   const subscriptionId = sessionEvents?.subscriptionId;
   if (subscriptionId === undefined) throw new Error("session event subscription is unavailable");
@@ -669,21 +721,33 @@ async function exitRawTerminal(): Promise<void> {
 }
 
 async function sendRawTerminalBytes(): Promise<void> {
-  if (!rawTerminalActive) throw new Error("raw terminal is not open");
+  if (!rawTerminalActive) throw browserExpectedError(
+    "web.terminal.not-open",
+    "raw terminal is not open",
+    "invocation",
+  );
   const bytes = parseHexBytes(terminalBytesInput.value);
   if (rawTerminalId === undefined) throw new Error("raw terminal id is unavailable");
   const receipt = await requireClient().writeRawTerminal(rawTerminalId, bytes);
   appendTerminalLine(`tx ${receipt.atSequence}  ${hexBytes(bytes)}  [${receipt.outcome.kind}]`);
   terminalBytesInput.value = "";
   if (receipt.outcome.kind !== "accepted-by-platform") {
-    throw new Error(`raw terminal write was ${receipt.outcome.kind}`);
+    throw browserExpectedError(
+      "web.terminal.write-incomplete",
+      `raw terminal write was ${receipt.outcome.kind}`,
+      "operation",
+    );
   }
 }
 
 function parseHexBytes(value: string): Uint8Array {
   const compact = value.replace(/\s+/gu, "");
   if (compact.length === 0 || compact.length % 2 !== 0 || !/^[0-9a-f]+$/iu.test(compact)) {
-    throw new Error("raw terminal bytes must be one or more complete hexadecimal octets");
+    throw browserExpectedError(
+      "web.terminal.bytes-invalid",
+      "raw terminal bytes must be one or more complete hexadecimal octets",
+      "invocation",
+    );
   }
   return Uint8Array.from(compact.match(/../gu)!.map((octet) => Number.parseInt(octet, 16)));
 }
@@ -757,17 +821,10 @@ function updateConnectButton(): void {
 }
 
 function showError(cause: unknown): void {
-  const error = errorObject(cause);
+  const error = browserFailure(cause);
   errorPanel.hidden = false;
-  errorMessage.textContent = errorText(error);
+  errorMessage.textContent = browserFailureText(error);
   errorView.textContent = JSON.stringify(error, null, 2);
-}
-
-function errorText(error: object): string {
-  const reported = error as { readonly message?: unknown; readonly code?: unknown };
-  if (typeof reported.message === "string" && reported.message.length > 0) return reported.message;
-  if (typeof reported.code === "string" && reported.code.length > 0) return reported.code;
-  return "The request failed without a reported cause.";
 }
 
 function clearError(): void {
@@ -776,14 +833,12 @@ function clearError(): void {
   errorView.textContent = "";
 }
 
-function errorObject(cause: unknown): object {
-  if (cause instanceof SessionRpcError) return cause.error;
-  if (typeof cause === "object" && cause !== null && "error" in cause) return (cause as { readonly error: object }).error;
-  return { code: "web.failed", message: cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause), retryability: "no" };
-}
-
 function requireSessionContext(): BrowserSessionContext {
-  if (sessionContext === undefined) throw new Error("load a device before using the session");
+  if (sessionContext === undefined) throw browserExpectedError(
+    "web.session.required",
+    "load a device before using the session",
+    "invocation",
+  );
   return sessionContext;
 }
 
@@ -795,17 +850,29 @@ function selectedBrowserCaptureLimits(): BrowserCaptureLimits {
   const maximumCaptureInMemoryBytes = Number(captureMemoryInput.value);
   const maximumCaptureQueueBytes = Number(captureQueueInput.value);
   if (!Number.isSafeInteger(maximumCaptureQueueBytes) || maximumCaptureQueueBytes <= 0) {
-    throw new RangeError("maximum capture queue bytes must be a positive integer");
+    throw browserExpectedError(
+      "web.capture.queue-limit-invalid",
+      "maximum capture queue bytes must be a positive integer",
+      "invocation",
+    );
   }
   if (!Number.isSafeInteger(maximumCaptureInMemoryBytes)
       || maximumCaptureInMemoryBytes <= maximumCaptureQueueBytes) {
-    throw new RangeError("capture memory bytes must be an integer greater than maximum capture queue bytes");
+    throw browserExpectedError(
+      "web.capture.memory-limit-invalid",
+      "capture memory bytes must be an integer greater than maximum capture queue bytes",
+      "invocation",
+    );
   }
   return Object.freeze({ maximumCaptureQueueBytes, maximumCaptureInMemoryBytes });
 }
 
 function requireSessionCaptureLimits(): BrowserCaptureLimits {
-  if (sessionCaptureLimits === undefined) throw new Error("capture limits are unavailable until a device is loaded");
+  if (sessionCaptureLimits === undefined) throw browserExpectedError(
+    "web.capture.session-required",
+    "capture limits are unavailable until a device is loaded",
+    "invocation",
+  );
   return sessionCaptureLimits;
 }
 
@@ -828,7 +895,11 @@ async function resetForCaptureSettings(): Promise<void> {
 function browserGrant(matches: readonly boolean[]): GrantDescriptor {
   const matchedFilters = matches.flatMap((matched, index) => matched ? [index] : []);
   if (matchedFilters.length === 0) {
-    throw new Error("the granted device does not match any requested profile filter");
+    throw browserExpectedError(
+      "web.acquisition.grant-mismatch",
+      "the granted device does not match any requested profile filter",
+      "invocation",
+    );
   }
   return {
     grantId: crypto.randomUUID() as import("@protodriver/contracts").GrantId,
@@ -837,7 +908,11 @@ function browserGrant(matches: readonly boolean[]): GrantDescriptor {
 }
 
 function requireLoaded(): BrowserLoadedDevice {
-  if (loaded === undefined) throw new Error("load a device package first");
+  if (loaded === undefined) throw browserExpectedError(
+    "web.package.required",
+    "load a device package first",
+    "invocation",
+  );
   return loaded;
 }
 

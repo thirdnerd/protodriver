@@ -426,3 +426,30 @@ for (const kind of ["postMessage"]) {
     harness.dispose();
   });
 }
+
+test("postMessage preserves an explicit failure envelope thrown by a handler", async () => {
+  const server = {
+    events: new EventQueue(),
+    async handle() {
+      throw Object.assign(new Error("bad request"), { error: {
+        code: "request.invalid",
+        message: "bad request",
+        responsibility: "invocation",
+        retryability: "no",
+      } });
+    },
+  };
+  const { port1, port2 } = new MessageChannel();
+  const service = serveSessionRpc(port2, server);
+  const client = new DeviceSessionRpcClient(new PostMessageSessionRpcAdapter(port1));
+  try {
+    await assert.rejects(client.getSnapshot(), (cause) => (
+      cause instanceof SessionRpcError
+      && cause.error.code === "request.invalid"
+      && cause.error.responsibility === "invocation"
+    ));
+  } finally {
+    await client.close();
+    service.dispose();
+  }
+});

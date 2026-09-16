@@ -34,6 +34,7 @@ function fail(code: string, message: string, details?: PdrError["details"]): nev
   throw new AcquisitionError({
     code,
     message,
+    responsibility: "host",
     retryability: "no",
     ...(details === undefined ? {} : { details }),
   });

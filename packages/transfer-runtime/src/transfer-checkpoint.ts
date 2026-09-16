@@ -10,16 +10,19 @@ import type {
   TransferResumeIdentity,
   TransferVerificationContract,
   TransferVerificationResult,
+  PdrFailureResponsibility,
 } from "@protodriver/contracts";
 import { isTransferDigestAlgorithm } from "@protodriver/contracts";
 import { executeHostToDeviceTransferOutcome } from "./transfer.ts";
 
 export class TransferCheckpointError extends Error {
+  readonly responsibility: PdrFailureResponsibility;
   readonly diagnostic: TransferCheckpointDiagnostic;
 
-  constructor(diagnostic: TransferCheckpointDiagnostic) {
+  constructor(diagnostic: TransferCheckpointDiagnostic, responsibility: PdrFailureResponsibility = "operation") {
     super(`${diagnostic.code}: ${diagnostic.message}`);
     this.name = "TransferCheckpointError";
+    this.responsibility = responsibility;
     this.diagnostic = Object.freeze({ ...diagnostic });
   }
 }
@@ -35,7 +38,7 @@ function checkpointError(
     declarationPath,
     message,
     ...(details === undefined ? {} : { details }),
-  });
+  }, "host");
 }
 
 function lowercaseDigest(value: string, path: string): string {

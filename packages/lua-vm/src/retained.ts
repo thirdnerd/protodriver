@@ -1,6 +1,7 @@
 import { nativeKeys, nativeEntries, nativeValues, nativeRecord, nativeArray, nativeSort, nativeEncode, nativeValue } from "./native-account.ts";
-import type { VerifiedLuaSourceSet, AuthoredValueType, AuthoredOperation, PublicValue } from "@protodriver/contracts";
+import type { VerifiedLuaSourceSet, AuthoredValueType, AuthoredOperation, PdrFailure, PublicValue } from "@protodriver/contracts";
 import { resolveLuaResourcePolicy, luaResourceError, type LuaResourcePolicyRequest } from "./resource-policy.ts";
+export { LuaResourceError } from "./resource-policy.ts";
 import { environmentFailure } from "./environment-failure.ts";
 import { NativeScratch, StandaloneNativeData, withNativeScratch, activeNativeScratch, type NativeDataAccount } from "./native-account.ts";
 export type { NativeDataAccount } from "./native-account.ts";
@@ -17,6 +18,15 @@ export const RETAINED_VM_SHA256 = "f0646d258acf98a02eabf678aea7ae90f118fca6e1014
 export const DEFAULT_RETAINED_EFFECT_WORK = 32_000_000;
 export const RETAINED_LUA_FUEL = 1_000_000;
 const RETAINED_ADMISSION_LUA_FUEL = 100_000;
+
+function authoredVmHostFailure(code: string, message: string): Error & { readonly error: PdrFailure } {
+  return Object.assign(new Error(`${code}: ${message}`), { error: {
+    code,
+    message,
+    responsibility: "host" as const,
+    retryability: "no" as const,
+  } });
+}
 
 function retainedVmFailure(status: number, fuelConsumed: number, phase: "admission" | "dispatch"): Error {
   // -2 is scratch capacity, NOT the retained result's recoverable -26.
@@ -213,7 +223,10 @@ export async function openRetainedLua(source: VerifiedLuaSourceSet, artifact: Ui
   const policy = resolveRetainedLuaPolicy(request);
   const bytes = artifact.slice();
   const digest = nativeArray([...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]).map(v => v.toString(16).padStart(2, "0")).join("");
-  if (digest !== RETAINED_VM_SHA256) throw new Error("authored.vm.digest-mismatch");
+  if (digest !== RETAINED_VM_SHA256) throw authoredVmHostFailure(
+    "authored.vm.digest-mismatch",
+    "the bundled retained VM does not match its build identity",
+  );
   let e: Exports;
   let chargeEncoding: ((units: number) => void) | undefined, encodingFailure: unknown;
   let poisoned = false, allocationSerial = 0;
@@ -269,7 +282,10 @@ export async function openRetainedLua(source: VerifiedLuaSourceSet, artifact: Ui
     wasi_snapshot_preview1: { fd_read: forbidden, fd_write: forbidden, fd_close: forbidden, fd_seek: forbidden },
   });
   e = instance.exports as Exports; e._initialize();
-  if (e.pdrv_lua_vm_smoke() !== 42 || typeof e.pdrv_retained_result_encode !== "function") throw new Error("authored.vm.contract-mismatch");
+  if (e.pdrv_lua_vm_smoke() !== 42 || typeof e.pdrv_retained_result_encode !== "function") throw authoredVmHostFailure(
+    "authored.vm.contract-mismatch",
+    "the bundled retained VM does not implement the required host contract",
+  );
   const inputCapacity = policy.maximumEncodedInputBytes;
   let outputCapacity = policy.maximumEncodedOutputBytes, output = e.malloc(outputCapacity);
   const input = e.malloc(inputCapacity), fuel = e.malloc(4), handleOut = e.malloc(4);
@@ -305,7 +321,10 @@ export async function openRetainedLua(source: VerifiedLuaSourceSet, artifact: Ui
     new Uint8Array(e.memory.buffer, input, v.length).set(v);
   };
   try {
-    if (!input || !output || !fuel || !handleOut) throw new Error("authored.vm.allocation-failed");
+    if (!input || !output || !fuel || !handleOut) throw authoredVmHostFailure(
+      "authored.vm.allocation-failed",
+      "the host could not allocate retained VM working memory",
+    );
     const code = new TextEncoder().encode(dispatcher); put(code);
     // One bounded effect-free evaluation, not a fresh account per comparison.
     // Retained execution below uses its actual activation/parent work account.
@@ -339,7 +358,10 @@ export async function openRetainedLua(source: VerifiedLuaSourceSet, artifact: Ui
     e.free(output); output = 0;
     outputCapacity = Math.max(1, Math.ceil(policy.maximumEncodedOutputBytes / 16));
     output = e.malloc(outputCapacity);
-    if (!output) throw new Error("authored.vm.allocation-failed");
+    if (!output) throw authoredVmHostFailure(
+      "authored.vm.allocation-failed",
+      "the host could not allocate retained VM output memory",
+    );
     const [handlerBindings, authorizationBindings] = withNativeScratch(admissionScratch, () => {
       const handlers = (graph.description as { handlers?: Array<{ binding: string; authorizeWrite?: string }> }).handlers ?? [];
       admissionScratch.reserve(16 + handlers.length * 64); admissionScratch.work(handlers.length * 2);
@@ -387,7 +409,10 @@ export async function openRetainedLua(source: VerifiedLuaSourceSet, artifact: Ui
           // needlessly repeats native traversal and can consume the account.
           outputCapacity = policy.maximumEncodedOutputBytes;
           output = e.malloc(outputCapacity);
-          if (!output) throw new Error("authored.vm.allocation-failed");
+          if (!output) throw authoredVmHostFailure(
+            "authored.vm.allocation-failed",
+            "the host could not grow retained VM output memory",
+          );
           // The tagged outcome survives; NEVER dispatch the authored turn again.
           count = e.pdrv_retained_result_encode(handle, output, outputCapacity);
         }
@@ -464,7 +489,10 @@ export async function openRetainedLua(source: VerifiedLuaSourceSet, artifact: Ui
           }); } finally { scope.close(); }
         },
         async register(id: string, parent?: string, chargeWork?: (units: number) => void, maximumFuel = RETAINED_LUA_FUEL, segments = 1) {
-          if (closed || accounts.has(id) || retainedAccounts.has(id) || accounts.size >= 64) throw new Error("authored.vm.account-limit");
+          if (closed || accounts.has(id) || retainedAccounts.has(id) || accounts.size >= 64) throw authoredVmHostFailure(
+            "authored.vm.account-limit",
+            "the host cannot grant another retained VM execution account",
+          );
           if (parent !== undefined && !accounts.has(parent) && !retainedAccounts.has(parent)) throw new Error("authored.vm.account-revoked");
           // An effect-caused callback has a distinct task but cannot print fuel.
           if (!Number.isSafeInteger(maximumFuel) || maximumFuel < 1 || maximumFuel > RETAINED_LUA_FUEL) throw new Error("authored.vm.invalid-fuel-partition");
@@ -565,7 +593,10 @@ export async function openRetainedLua(source: VerifiedLuaSourceSet, artifact: Ui
               consumed = result.consumed; result.release();
             }
             if (!closed && retainAccount && accounts.has(id)) {
-              if (retainedAccounts.size >= 1024) throw new Error("authored.vm.retained-account-limit");
+              if (retainedAccounts.size >= 1024) throw authoredVmHostFailure(
+                "authored.vm.retained-account-limit",
+                "the host cannot retain another VM execution account",
+              );
               retainedAccounts.set(id, accounts.get(id)!);
             }
           } finally { accounts.delete(id); workChargers.delete(id); endedTasks.delete(id); }

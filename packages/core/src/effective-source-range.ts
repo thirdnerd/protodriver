@@ -29,5 +29,5 @@ export function validateEffectiveSourceRange(range: EffectiveSourceRange, descri
   if (!Number.isSafeInteger(range.offset) || range.offset < 0 || !Number.isSafeInteger(range.length) || range.length < 1
     || !Number.isSafeInteger(range.offset + range.length) || (descriptorLength !== undefined && range.offset + range.length > descriptorLength))
     throw Object.assign(new Error("effective source range is outside the admitted descriptor"),
-      { error: { code: "authored.transfer.source-range", message: "effective source range is outside the admitted descriptor", retryability: "no" } });
+      { error: { code: "authored.transfer.source-range", message: "effective source range is outside the admitted descriptor", responsibility: "invocation", retryability: "no" } });
 }

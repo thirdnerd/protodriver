@@ -13,6 +13,7 @@ import {
   type AuthoredArgumentControl,
   type AuthoredArgumentInput,
 } from "./authored-argument.ts";
+import { browserExpectedError } from "./errors.ts";
 
 /** One host-owned continuation, never a general retry loop. A second
  * resume-required terminal result remains visible to the operator. */
@@ -70,6 +71,7 @@ export function authoredOperationErrorText(cause: unknown): string {
   if (reported !== undefined && typeof reported.message === "string") {
     const lines = [reported.message];
     if (typeof reported.code === "string") lines.push(`Code: ${reported.code}`);
+    if (typeof reported.responsibility === "string") lines.push(`Responsibility: ${reported.responsibility}`);
     if (reported.details !== undefined) lines.push(`Details: ${stringifyGeneratedPublicJson(reported.details)}`);
     return lines.join("\n");
   }
@@ -231,7 +233,8 @@ export function installAuthoredControls(root: HTMLElement, loaded: NonNullable<B
           const args: Record<string, OperationArgument> = {};
           for (const [name, view] of fields) {
             if (view.file !== undefined) {
-              const file = view.file.files?.[0]; if (!file) throw new Error("select a file for " + name);
+              const file = view.file.files?.[0]; if (!file)
+                throw browserExpectedError("web.argument.file-required", "select a file for " + name, "invocation");
               const source = await registerAuthoredFileArgument(operation, name, file, resource => context.registerResource(resource));
               sources.push(source); args[name] = source.argument;
             } else {
@@ -259,7 +262,10 @@ export function installAuthoredControls(root: HTMLElement, loaded: NonNullable<B
               { operation: operation.id, arguments: args }, operationId => {
                 active.set(operationId, { progress, cancel }); cancel.disabled = false;
               });
-            if (outcome.outcome !== "completed") throw new Error(stringifyGeneratedPublicJson(outcome));
+            if (outcome.outcome !== "completed") {
+              if (outcome.error !== undefined) throw Object.assign(new Error(outcome.error.message), { error: outcome.error });
+              throw browserExpectedError("web.operation.incomplete", `operation ended ${outcome.outcome} without an error`, "operation");
+            }
             output.dataset.hostResumeCount = String(resumeCount);
             output.innerHTML = operation.resultControl === null ? "Completed" : renderAuthoredResult(operation.resultControl, outcome.result);
           }
@@ -314,7 +320,8 @@ function readArgument(name: string, view: ArgumentView): import("@protodriver/co
   try {
     return authoredArgumentValue(view.control, view.read());
   } catch (cause) {
-    throw new Error(`${name}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    throw browserExpectedError("web.argument.invalid",
+      `${name}: ${cause instanceof Error ? cause.message : String(cause)}`, "invocation", cause);
   }
 }
 

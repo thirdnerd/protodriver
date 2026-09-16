@@ -88,6 +88,7 @@ test("Linux x64 package discovers runtime workspaces, reproduces, and smokes wit
   for (const path of [
     "README.md",
     "docs/author-tutorial.md",
+    "docs/cli-reference.md",
     "docs/declaration-reference.md",
     "docs/linux-x64-package.md",
     "examples/README.md",

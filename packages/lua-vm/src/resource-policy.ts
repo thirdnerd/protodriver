@@ -18,6 +18,21 @@ export const LUA_RESOURCE_POLICY_MAXIMA: LuaResourcePolicy = Object.freeze({
 
 export type LuaResourcePolicyRequest = Partial<LuaResourcePolicy>;
 
+/** Explicit product failure; callers assign responsibility for the admission or execution context. */
+export class LuaResourceError extends Error {
+  declare readonly code: string;
+  declare readonly fuelConsumed?: number;
+
+  constructor(code: string, detail: string, fuelConsumed?: number) {
+    super(detail.startsWith(`${code}:`) ? detail : `${code}: ${detail}`);
+    this.name = "LuaResourceError";
+    Object.defineProperty(this, "code", { value: code, enumerable: true });
+    if (fuelConsumed !== undefined) {
+      Object.defineProperty(this, "fuelConsumed", { value: fuelConsumed, enumerable: true });
+    }
+  }
+}
+
 export function resolveLuaResourcePolicy(request: LuaResourcePolicyRequest = {}): LuaResourcePolicy {
   return Object.freeze({
     maximumEncodedInputBytes: member("maximumEncodedInputBytes", request),
@@ -26,13 +41,8 @@ export function resolveLuaResourcePolicy(request: LuaResourcePolicyRequest = {})
   });
 }
 
-export function luaResourceError(code: string, detail: string, fuelConsumed?: number): Error {
-  const error = new Error(detail.startsWith(`${code}:`) ? detail : `${code}: ${detail}`);
-  Object.defineProperty(error, "code", { value: code, enumerable: true });
-  if (fuelConsumed !== undefined) {
-    Object.defineProperty(error, "fuelConsumed", { value: fuelConsumed, enumerable: true });
-  }
-  return error;
+export function luaResourceError(code: string, detail: string, fuelConsumed?: number): LuaResourceError {
+  return new LuaResourceError(code, detail, fuelConsumed);
 }
 
 function member(name: keyof LuaResourcePolicy, request: LuaResourcePolicyRequest): number {

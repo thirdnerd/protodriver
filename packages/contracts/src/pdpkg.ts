@@ -78,6 +78,7 @@ export interface PdpkgDiagnostic {
 }
 
 export class PdpkgReadError extends Error {
+  readonly responsibility = "definition" as const;
   readonly diagnostic: PdpkgDiagnostic;
   declare readonly sourceMember?: string;
 

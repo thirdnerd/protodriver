@@ -133,7 +133,7 @@ export class BrowserUsbOpenError extends Error {
   readonly error: PdrError;
 
   constructor(code: string, message: string, cause?: unknown) {
-    const error = pdrError(code, message, "unknown", cause);
+    const error = pdrError(code, message, "unknown", cause, "host");
     super(error.message);
     this.name = "BrowserUsbOpenError";
     this.error = error;
@@ -840,11 +840,13 @@ function pdrError(
   message: string,
   retryability: PdrError["retryability"],
   cause?: unknown,
+  responsibility: NonNullable<PdrError["responsibility"]> = "operation",
 ): PdrError {
   const platformCause = cause === undefined ? undefined : snapshotUsbCause(cause);
   return {
     code,
     message,
+    responsibility,
     retryability,
     ...(platformCause === undefined ? {} : { platformCause }),
   };

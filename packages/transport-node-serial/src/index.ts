@@ -226,10 +226,12 @@ function pdrError(
   message: string,
   retryability: PdrError["retryability"],
   platformCause?: PlatformCauseSnapshot,
+  responsibility: NonNullable<PdrError["responsibility"]> = "operation",
 ): PdrError {
   return {
     code,
     message,
+    responsibility,
     retryability,
     ...(platformCause === undefined ? {} : { platformCause }),
   };
@@ -275,6 +277,7 @@ export class SerialPortHeldError extends Error {
       `serial port ${path} is held by another context`,
       "after-recovery",
       platformCause,
+      "host",
     );
     super(error.message);
     this.name = "SerialPortHeldError";
@@ -293,6 +296,7 @@ export class SerialPortOpenError extends Error {
       `could not open serial port ${path}: ${errorObject(cause).message}`,
       "unknown",
       platformCause,
+      "host",
     );
     super(error.message);
     this.name = "SerialPortOpenError";

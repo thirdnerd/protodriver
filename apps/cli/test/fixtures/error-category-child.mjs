@@ -4,6 +4,7 @@ const requested = process.argv[2];
 const causes = {
   unexpected: new Error("unrecognised throw"),
   definition: {
+    responsibility: "definition",
     diagnostic: {
       code: "pdpkg.archive.invalid",
       message: "package archive is invalid",
@@ -13,6 +14,7 @@ const causes = {
     error: {
       code: "transfer.settlement.timeout",
       message: "device transfer settlement timed out",
+      responsibility: "operation",
       retryability: "after-recovery",
     },
   },
@@ -20,13 +22,15 @@ const causes = {
     error: {
       code: "resource.read-failed",
       message: "host resource read failed",
+      responsibility: "host",
       retryability: "no",
     },
   },
-  uncategorized: {
-    diagnostic: {
-      code: "future-domain.failure",
-      message: "registered diagnostic has no category decision",
+  invocation: {
+    error: {
+      code: "cli.argument.invalid",
+      message: "command argument is invalid",
+      responsibility: "invocation",
     },
   },
   cancelled: new DOMException("operator cancelled", "AbortError"),

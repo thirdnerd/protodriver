@@ -1,6 +1,6 @@
 import { nativeKeys, nativeEntries, nativeValues, nativeRecord, nativeArray, nativeSort, nativeValue, nativeEncode, nativeJson } from "@protodriver/lua-vm/retained";
 import { PdpkgReadError, readPdpkg, readAuthoredDirectorySnapshot, verifyLuaSourceSet, type LuaSourceMemberCandidate } from "@protodriver/contracts";
-import { openRetainedLua, RETAINED_VM_SHA256, resolveRetainedLuaPolicy, assertSourceDeclarationPolicy, sourceMemberAdmissionError, type RetainedLuaResourcePolicyRequest, type NativeDataAccount, activeNativeScratch } from "@protodriver/lua-vm/retained";
+import { openRetainedLua, RETAINED_VM_SHA256, resolveRetainedLuaPolicy, assertSourceDeclarationPolicy, sourceMemberAdmissionError, LuaResourceError, type RetainedLuaResourcePolicyRequest, type NativeDataAccount, activeNativeScratch } from "@protodriver/lua-vm/retained";
 import { admitAuthoredDescription, canonicalAuthoredBytes, AuthoredAdmissionError, validateAuthoredTopologyGrant } from "./authored-admission.ts";
 import { RetainedSessionRpcServer, type RetainedSessionOptions } from "./retained-session.ts";
 import { DEFAULT_AUTHORED_POLL_POLICY, grantPollPlans, pollPlans } from "./authored-poll.ts";
@@ -12,6 +12,12 @@ import type { AuthoredCapabilityName } from "./authored-capabilities.ts";
 /** Trusted host composition only. Packages cannot supply connection factories. */
 export type AuthoredHostGrant = Omit<Parameters<typeof createAuthoredSession>[2],
   "platform" | "resourceBroker" | "captureDestinationAdapter">;
+
+function typedLuaFailure(cause: unknown, responsibility: "definition" | "host"): unknown {
+  if (!(cause instanceof LuaResourceError)) return cause;
+  if ("error" in cause) return cause;
+  return Object.assign(cause, { error: { code: cause.code, message: cause.message, responsibility, retryability: "no" as const } });
+}
 
 function materialize(v: unknown): unknown {
   activeNativeScratch()?.node();
@@ -38,7 +44,9 @@ export async function authoredDigest(domain: string, bytes: Uint8Array): Promise
 }
 export async function admitAuthoredModule(input: Uint8Array | readonly LuaSourceMemberCandidate[], artifact: Uint8Array,
   options: { readonly expectedSourceSetSha256?: string; readonly luaResourcePolicy?: RetainedLuaResourcePolicyRequest } = {}) {
-  const policy = resolveRetainedLuaPolicy(options.luaResourcePolicy);
+  let policy;
+  try { policy = resolveRetainedLuaPolicy(options.luaResourcePolicy); }
+  catch (cause) { throw typedLuaFailure(cause, "host"); }
   // Both entry forms hit exactly the bounded archive member/bootstrap rules.
   let population;
   try {
@@ -53,12 +61,12 @@ export async function admitAuthoredModule(input: Uint8Array | readonly LuaSource
   const snapshot = await verifyLuaSourceSet(population);
   const vmBytes = artifact.slice();
   if (options.expectedSourceSetSha256 !== undefined && options.expectedSourceSetSha256 !== snapshot.identity.hex)
-    throw new AuthoredAdmissionError("authored.expectation.mismatch", "source-set expectation not reached");
+    throw new AuthoredAdmissionError("authored.expectation.mismatch", "source-set expectation not reached", "invocation");
   const first = await openRetainedLua(snapshot, vmBytes, policy).catch((cause: unknown) => {
     const failure = cause as { readonly code?: unknown; readonly phase?: unknown };
     if (failure?.code === "lua-vm.environment.program" && failure.phase === "admission")
       throw sourceMemberAdmissionError("device.lua", "initialization-failed");
-    throw cause;
+    throw typedLuaFailure(cause, "definition");
   });
   try {
   const { description, canonical, bindings } = first.admission(() => {
@@ -103,7 +111,7 @@ export async function admitAuthoredModule(input: Uint8Array | readonly LuaSource
 export async function createAuthoredSession(input: Uint8Array | readonly LuaSourceMemberCandidate[], artifact: Uint8Array,
   options: Omit<RetainedSessionOptions, "execution" | "description" | "operations" | "logicalDevice" | "executionIdentity"> & { readonly luaResourcePolicy?: RetainedLuaResourcePolicyRequest },
   expectation?: string) {
-  if (nativeKeys(options.helpers).length) throw new AuthoredAdmissionError("authored.helpers.unavailable", "participating native helpers require an identity inventory before use");
+  if (nativeKeys(options.helpers).length) throw new AuthoredAdmissionError("authored.helpers.unavailable", "participating native helpers require an identity inventory before use", "host");
   const module = await admitAuthoredModule(input, artifact, {
     ...(expectation === undefined ? {} : { expectedSourceSetSha256: expectation }),
     ...(options.luaResourcePolicy === undefined ? {} : { luaResourcePolicy: options.luaResourcePolicy }),
@@ -116,10 +124,10 @@ export async function createAuthoredSession(input: Uint8Array | readonly LuaSour
       transferSourceQuantum: TRANSFER_SOURCE_QUANTUM, maximumEffectWork: options.maximumEffectWork ?? 32000000, maximumConcurrentTimers: options.maximumConcurrentTimers ?? DEFAULT_HOST_RESOURCE_LIMITS.maximumConcurrentTimers,
       maximumNativeHelperBytes: options.maximumNativeHelperBytes ?? 16777216 })) })).pending;
   return execution.admission(() => {
-  if (!module.description.modes.includes(options.modeId)) throw new AuthoredAdmissionError("authored.mode.unavailable", `host selected unavailable mode ${JSON.stringify(options.modeId) ?? "<missing>"}`);
-  if (!module.description.profiles.includes(options.profileId)) throw new AuthoredAdmissionError("authored.profile.unavailable", `host selected unavailable profile ${JSON.stringify(options.profileId) ?? "<missing>"}`);
+  if (!module.description.modes.includes(options.modeId)) throw new AuthoredAdmissionError("authored.mode.unavailable", `host selected unavailable mode ${JSON.stringify(options.modeId) ?? "<missing>"}`, "invocation");
+  if (!module.description.profiles.includes(options.profileId)) throw new AuthoredAdmissionError("authored.profile.unavailable", `host selected unavailable profile ${JSON.stringify(options.profileId) ?? "<missing>"}`, "invocation");
   const request = module.description.connectionProfiles?.[options.profileId];
-  if (request && !request.modes.includes(options.modeId)) throw new AuthoredAdmissionError("authored.profile.unavailable", "profile does not allow the host-selected mode");
+  if (request && !request.modes.includes(options.modeId)) throw new AuthoredAdmissionError("authored.profile.unavailable", "profile does not allow the host-selected mode", "invocation");
   const scheduled = Boolean(module.description.handlers?.length);
   const plans = pollPlans(module.description);
   const pollPolicy = grantPollPlans(plans, options.pollPolicy === undefined ? DEFAULT_AUTHORED_POLL_POLICY : options.pollPolicy);
@@ -150,12 +158,12 @@ export async function createAuthoredSession(input: Uint8Array | readonly LuaSour
     activeNativeScratch()?.iteration();
     const op = nativeArray(module.description.operations).find(op => op.id === plan.operation)!;
     if (!op.availability.profiles.includes(options.profileId) || nativeArray(op.requires).some(r => !capabilities[r as keyof typeof capabilities]?.available))
-      throw new AuthoredAdmissionError("authored.poll.unavailable", "host cannot execute the requested poll target");
+      throw new AuthoredAdmissionError("authored.poll.unavailable", "host cannot execute the requested poll target", "host");
   }
   if (scheduled && nativeArray(module.description.entry?.requires)?.some(requirement =>
     !(module.description.entry?.handoffTo && ["channel.read", "channel.write"].includes(requirement))
     && !capabilities[requirement as keyof typeof capabilities]?.available))
-    throw new AuthoredAdmissionError("authored.capability.unavailable", "entry requires authority owned by the input handler or unavailable on this host");
+    throw new AuthoredAdmissionError("authored.capability.unavailable", "entry requires authority owned by the input handler or unavailable on this host", "host");
     return { module, server: new RetainedSessionRpcServer({ ...options, channelRoles: module.description.channelRoles?.[options.profileId], checkpointPolicyDigest, nativeData, pollPolicy, capabilities, execution, description: module.description,
       logicalDevice: module.description.id, operations: nativeArray(module.description.operations).map(operation => operation.id),
       executionIdentity: { digest: module.identity.digest },

@@ -167,6 +167,7 @@ test("an oversized RPC call is refused without tearing down the session", async 
       reason: {
         code: "rpc.message-too-large",
         message: "rpc exceeds maximumRpcMessageBytes: observed 771, maximum 180",
+        responsibility: "host",
         retryability: "no",
         details: {
           limit: "maximumRpcMessageBytes",

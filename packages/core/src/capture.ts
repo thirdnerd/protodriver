@@ -108,6 +108,7 @@ function errorSnapshot(error: object | string): PdrError {
   return {
     code: "capture.storage-failed",
     message,
+    responsibility: "host",
     retryability: "no",
     ...(error instanceof Error
       ? {
@@ -404,7 +405,7 @@ export class CaptureWriter {
     }
     // Publish loss only after its position is retained: an owner may emit a
     // terminal observation synchronously while revoking an operation.
-    this.#notifyLoss({ code: "capture.recorder-overrun", message: "capture queue lost records", retryability: "no" });
+    this.#notifyLoss({ code: "capture.recorder-overrun", message: "capture queue lost records", responsibility: "host", retryability: "no" });
     this.#startDrain();
   }
 
@@ -540,7 +541,7 @@ export class CaptureWriter {
     this.#lossNotified = true;
     try { this.#onRecordingLoss?.(error); }
     catch (cause) {
-      this.#storageError ??= { code: "capture.loss-observer-failed", message: String(cause), retryability: "no" };
+      this.#storageError ??= { code: "capture.loss-observer-failed", message: String(cause), responsibility: "host", retryability: "no" };
     }
   }
 }

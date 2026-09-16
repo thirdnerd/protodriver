@@ -49,6 +49,7 @@ function overflowError(maximumLosslessQueueDepth: number): PdrError {
   return {
     code: "rpc.subscriber-overflow",
     message: `subscriber exceeded ${maximumLosslessQueueDepth} pending lossless events`,
+    responsibility: "host",
     retryability: "after-recovery",
     details: { maximumLosslessQueueDepth },
   };
@@ -265,4 +266,3 @@ export class SessionEventDelivery {
     subscriber.pendingLossless = 0;
   }
 }
-

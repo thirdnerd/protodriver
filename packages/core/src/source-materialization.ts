@@ -9,7 +9,7 @@ export function sourceValueTypes(operation: AuthoredOperation): Readonly<Record<
     : type.kind === "stream-source" ? { kind: "string", maximumLength: 128 } : type]));
 }
 function refuse(message: string): never {
-  throw Object.assign(new Error(message), { error: { code: "authored.source.invalid", message, retryability: "no" } });
+  throw Object.assign(new Error(message), { error: { code: "authored.source.invalid", message, responsibility: "invocation", retryability: "no" } });
 }
 export interface SourcePreparationContext {
   readonly id: OperationId;

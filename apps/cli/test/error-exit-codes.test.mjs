@@ -2,18 +2,24 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildPdpkg } from "../../../packages/contracts/src/pdpkg.ts";
+import { source as authoredSource } from "./fixtures/authored-front-door.mjs";
 
 import {
   GENERATED_CLI_ERROR_CATEGORIES,
+  generatedCliFailure,
   generatedCliExitCode,
 } from "../src/errors.ts";
 
 const EXPECTED_EXIT_CODES = Object.freeze({
-  unexpected: 1,
+  invocation: 5,
   definition: 2,
   operation: 3,
   host: 4,
-  uncategorized: 5,
+  unexpected: 1,
   cancelled: 130,
 });
 
@@ -87,16 +93,18 @@ test("every CLI error category is observed as its distinct process exit code", a
   }
 });
 
-test("the pdr catch boundary uses the category map and never invents retryability", async () => {
+test("the pdr catch boundary uses carried responsibility and never invents retryability", async () => {
   const unknown = await runPdr(["not-a-command"]);
-  assert.equal(unknown.exitCode, EXPECTED_EXIT_CODES.unexpected);
+  assert.equal(unknown.exitCode, EXPECTED_EXIT_CODES.invocation);
   assert.equal(unknown.signal, null);
   assert.equal(unknown.output, "");
   assert.deepEqual(JSON.parse(unknown.errors), {
-    category: "unexpected",
+    category: "invocation",
     error: {
-      code: "cli.failed",
-      message: 'Error: unknown command "not-a-command"; expected run, inspect, or pack',
+      code: "cli.command.unknown",
+      message: 'unknown command "not-a-command"; expected run, inspect, or pack',
+      responsibility: "invocation",
+      retryability: "no",
     },
   });
 
@@ -112,6 +120,55 @@ test("the pdr catch boundary uses the category map and never invents retryabilit
     error: {
       code: "pdpkg.archive.invalid",
       message: "ZIP end-of-central-directory record is missing",
+      responsibility: "definition",
     },
   });
+});
+
+test("a typed failure without responsibility is loudly unexpected while preserving its data", () => {
+  const failure = generatedCliFailure({ diagnostic: { code: "future.failure", message: "classification missing" } });
+  assert.deepEqual(failure, {
+    category: "unexpected",
+    exitCode: 1,
+    error: { code: "future.failure", message: "classification missing" },
+  });
+});
+
+test("Error.code and a direct code/message shape do not claim typed status", () => {
+  for (const cause of [
+    Object.assign(new Error("missing"), { code: "ENOENT" }),
+    { code: "authored.api-version", message: "device/v2 required", responsibility: "definition" },
+  ]) {
+    assert.deepEqual(generatedCliFailure(cause), {
+      category: "unexpected",
+      exitCode: 1,
+      error: { code: "cli.failed", message: cause instanceof Error ? "Error: missing" : "[object Object]" },
+    });
+  }
+});
+
+test("definition admission and invocation probes retain actionable codes", async t => {
+  const root = await mkdtemp(join(tmpdir(), "pdr-error-taxonomy-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const archive = async (name, source) => {
+    const path = join(root, name);
+    const built = await buildPdpkg([{ logicalName: "device.lua", sourceBytes: new TextEncoder().encode(source) }]);
+    await writeFile(path, built.archive);
+    return path;
+  };
+  const api = await archive("api.pdpkg", authoredSource.replace('apiVersion="device/v2"', 'apiVersion="device/v3"'));
+  const binding = await archive("binding.pdpkg", authoredSource.replace('binding="echo"', 'binding="no_such_binding"'));
+  const good = await archive("good.pdpkg", authoredSource);
+  for (const [argv, code, category, exitCode] of [
+    [["inspect", api], "authored.api-version", "definition", 2],
+    [["inspect", binding], "authored.binding.unresolved", "definition", 2],
+    [["run", good, "no_such_operation"], "cli.operation.unknown", "invocation", 5],
+  ]) {
+    const result = await runPdr(argv);
+    const reported = JSON.parse(result.errors);
+    assert.equal(result.exitCode, exitCode);
+    assert.equal(reported.category, category);
+    assert.equal(reported.error.code, code);
+    assert.equal(reported.error.responsibility, category);
+  }
 });

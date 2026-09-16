@@ -164,6 +164,7 @@ export class NodeUsbOpenError extends Error {
     const error: PdrError = {
       code,
       message,
+      responsibility: "host",
       retryability: code === "transport.port-held" ? "after-recovery" : "unknown",
       ...(platformCause === undefined ? {} : { platformCause }),
     };
@@ -1008,11 +1009,13 @@ function pdrError(
   message: string,
   retryability: PdrError["retryability"],
   cause?: unknown,
+  responsibility: NonNullable<PdrError["responsibility"]> = "operation",
 ): PdrError {
   const platformCause = cause === undefined ? undefined : snapshotUsbCause(cause);
   return {
     code,
     message,
+    responsibility,
     retryability,
     ...(platformCause === undefined ? {} : { platformCause }),
   };

@@ -13,8 +13,26 @@ import { NodeCaptureDestination } from "./capture-destination.ts";
 import { createNodeAuthoredAcquisition, selectAuthoredProfile } from "./authored-acquisition.ts";
 import { createWorkerNodeAuthoredRunDependencies, type WorkerNodeAuthoredRunOptions } from "./authored-worker-client.ts";
 import type { AuthoredWorkerSessionInput } from "./authored-worker-session.ts";
+import { cliFileSystem, expectedCliError } from "./expected-error.ts";
 
 const DEFAULT_CLI_CAPTURE_SIDECAR_THRESHOLD_BYTES = 1024 * 1024;
+
+function invocationError(code: string, message: string, cause?: unknown): Error {
+  return expectedCliError(code, message, "invocation", cause);
+}
+
+function parseArgumentValue(name: string, value: string): import("@protodriver/contracts").PublicValue {
+  try {
+    return JSON.parse(value) as import("@protodriver/contracts").PublicValue;
+  } catch (cause) {
+    throw invocationError("cli.argument.invalid-json", `--${name} requires a JSON value`, cause);
+  }
+}
+
+function operationOutcomeError(outcome: import("@protodriver/contracts").OperationResult): Error {
+  if (outcome.error !== undefined) return Object.assign(new Error(outcome.error.message), { error: outcome.error });
+  return expectedCliError("cli.operation.incomplete", `operation ended ${outcome.outcome} without an error`, "operation");
+}
 
 export type NodeAuthoredAcquisition = (description: AuthoredDescription,
   selection: { readonly modeId?: string; readonly profileId?: string; readonly candidateId?: string }) => Promise<AuthoredHostGrant>;
@@ -28,21 +46,21 @@ export interface AuthoredRunIo {
 export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
   acquire?: NodeAuthoredAcquisition, workerOptions?: WorkerNodeAuthoredRunOptions): Promise<void> {
   const path = argv[0];
-  if (!path) throw new Error("usage: pdr run <device-directory-or-package> [--mode id] <operation> [flags]");
+  if (!path) throw invocationError("cli.run.usage", "usage: pdr run <device-directory-or-package> [--mode id] <operation> [flags]");
   const archive = await loadAuthoredArchive(path);
-  const artifact = new Uint8Array(await readFile(new URL("../../../packages/lua-vm/artifacts/protodriver-retained-v2.wasm", import.meta.url)));
+  const artifact = new Uint8Array(await cliFileSystem("the bundled Lua VM", () => readFile(new URL("../../../packages/lua-vm/artifacts/protodriver-retained-v2.wasm", import.meta.url))));
   const flags = new Map<string, string>();
   let operationId: string | undefined;
   for (let i = 1; i < argv.length; i++) {
     const token = argv[i]!;
     if (!token.startsWith("--")) {
-      if (operationId !== undefined) throw new Error("unexpected authored command argument: " + token);
+      if (operationId !== undefined) throw invocationError("cli.argument.unexpected", "unexpected authored command argument: " + token);
       operationId = token; continue;
     }
     const key = token.slice(2);
-    if (flags.has(key)) throw new Error("duplicate option: " + token);
+    if (flags.has(key)) throw invocationError("cli.option.duplicate", "duplicate option: " + token);
     if (["help", "json"].includes(key)) flags.set(key, "true");
-    else { const value = argv[++i]; if (value === undefined || value.startsWith("--")) throw new Error("value required for " + token); flags.set(key, value); }
+    else { const value = argv[++i]; if (value === undefined || value.startsWith("--")) throw invocationError("cli.option.value-required", "value required for " + token); flags.set(key, value); }
   }
   const expected = flags.get("expect-source-set-sha256");
   const module = await admitAuthoredModule(archive, artifact,
@@ -53,14 +71,14 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
     return;
   }
   const operation = model.operations.find(op => op.id === operationId);
-  if (!operation) throw new Error("unknown authored operation: " + operationId);
+  if (!operation) throw invocationError("cli.operation.unknown", "unknown authored operation: " + operationId);
   if (flags.has("help")) {
     io.output.write(renderAuthoredCliHelp(module.description, operationId));
     return;
   }
   const reserved = new Set(["mode", "profile", "candidate", "capture", "json", "save-result", "resume", "expect-source-set-sha256"]);
-  for (const key of flags.keys()) if (!reserved.has(key) && !Object.hasOwn(operation.arguments, key)) throw new Error("unknown option: --" + key);
-  for (const key of Object.keys(operation.arguments)) if (!flags.has(key)) throw new Error("missing argument: --" + key);
+  for (const key of flags.keys()) if (!reserved.has(key) && !Object.hasOwn(operation.arguments, key)) throw invocationError("cli.option.unknown", "unknown option: --" + key);
+  for (const key of Object.keys(operation.arguments)) if (!flags.has(key)) throw invocationError("cli.argument.missing", "missing argument: --" + key);
   let selection = {
     ...(flags.has("mode") ? { modeId: flags.get("mode")! } : {}),
     ...(flags.has("profile") ? { profileId: flags.get("profile")! } : {}),
@@ -69,16 +87,16 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
   if (module.description.connectionProfiles) {
     const selected = selectAuthoredProfile(module.description, selection);
     if (!operation.availability.modes.includes(selected.modeId) || !operation.availability.profiles.includes(selected.profileId))
-      throw new Error("authored.acquisition.operation-unavailable: operation does not allow the selected mode/profile");
+      throw expectedCliError("authored.acquisition.operation-unavailable", "operation does not allow the selected mode/profile", "invocation");
     selection = { modeId: selected.modeId, profileId: selected.profileId,
       ...(selection.candidateId === undefined ? {} : { candidateId: selection.candidateId }) };
   }
   if (workerOptions !== undefined) {
     if (acquire !== undefined) {
-      throw new Error("authored.acquisition.worker-callback-unavailable: a live embedding callback cannot cross the serialized worker boundary; supply a host-owned worker instead");
+      throw expectedCliError("authored.acquisition.worker-callback-unavailable", "a live embedding callback cannot cross the serialized worker boundary; supply a host-owned worker instead", "host");
     }
     if (!module.description.connectionProfiles || selection.modeId === undefined || selection.profileId === undefined) {
-      throw new Error("authored.acquisition.required: serialized worker needs an admitted physical connection profile");
+      throw expectedCliError("authored.acquisition.required", "serialized worker needs an admitted physical connection profile", "host");
     }
     await runAuthoredWorker({ path, archive,
       ...(expected === undefined ? {} : { expected }),
@@ -91,7 +109,11 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
   }
   const grant = await (acquire ?? createNodeAuthoredAcquisition())(module.description, selection);
   if ((flags.has("mode") && flags.get("mode") !== grant.modeId)
-    || (flags.has("profile") && flags.get("profile") !== grant.profileId)) throw new Error("authored.acquisition.selection-mismatch");
+    || (flags.has("profile") && flags.get("profile") !== grant.profileId)) throw expectedCliError(
+      "authored.acquisition.selection-mismatch",
+      "host acquisition grant differs from the requested selection",
+      "host",
+    );
   const resources = new ResourceBrokerHost(), sessionId = randomUUID() as SessionId;
   const resourceAdapter = new DirectResourceRpcAdapter(resources);
   const destinations = new CaptureDestinationRegistry();
@@ -112,7 +134,7 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
       const value = flags.get(name)!;
       if (type.kind === "byte-source" || type.kind === "stream-source") {
         const source = await registerAuthoredFileArgument(operation, name, value, register); sources.push(source); args[name] = source.argument;
-      } else args[name] = { kind: "value", value: type.kind === "string" || type.kind === "enum" ? value : JSON.parse(value) };
+      } else args[name] = { kind: "value", value: type.kind === "string" || type.kind === "enum" ? value : parseArgumentValue(name, value) };
     }
     const capture = flags.get("capture");
     if (capture) {
@@ -123,12 +145,12 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
     let outcome;
     let savedOutput: Awaited<ReturnType<typeof saveAuthoredOutput>> | undefined;
     if (operation.result.kind === "resource" || operation.result.kind === "file") {
-      if (flags.has("resume")) throw new Error("authored resource output has no resume recipe");
-      const output = flags.get("save-result"); if (!output) throw new Error("--save-result is required for declared resource output");
+      if (flags.has("resume")) throw invocationError("cli.option.unsupported", "authored resource output has no resume recipe");
+      const output = flags.get("save-result"); if (!output) throw invocationError("cli.option.required", "--save-result is required for declared resource output");
       savedOutput = await saveAuthoredOutput(client, operation, args, output, register);
       outcome = savedOutput.outcome;
     } else {
-      if (flags.has("save-result")) throw new Error("operation has no declared resource output");
+      if (flags.has("save-result")) throw invocationError("cli.option.unsupported", "operation has no declared resource output");
       const request = { operation: operation.id, arguments: args };
       const handle = flags.has("resume") ? await client.resumeTransfer({ ...request, checkpointId: flags.get("resume")! as CheckpointId }) : await client.startOperation(request);
       outcome = await client.awaitOperation(handle.operationId);
@@ -141,7 +163,7 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
       : savedOutput === undefined
         ? renderAuthoredCliResult(operation.resultControl, outcome.result)
         : `Saved ${savedOutput.byteLength} bytes to ${savedOutput.path}`) + "\n");
-    if (outcome.outcome !== "completed") throw new Error(stringifyGeneratedPublicJson(outcome));
+    if (outcome.outcome !== "completed") throw operationOutcomeError(outcome);
   } finally {
     observations?.dispose();
     await client?.disconnect().catch(() => undefined);
@@ -152,19 +174,19 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
 }
 
 async function loadAuthoredArchive(path: string): Promise<Uint8Array> {
-  const metadata = await stat(path);
-  if (metadata.isFile()) return new Uint8Array(await readFile(path));
-  if (!metadata.isDirectory()) throw new Error(`${path} must name a Lua source directory or package file`);
-  const logicalNames = (await readdir(path, { withFileTypes: true }))
+  const metadata = await cliFileSystem(path, () => stat(path));
+  if (metadata.isFile()) return new Uint8Array(await cliFileSystem(path, () => readFile(path)));
+  if (!metadata.isDirectory()) throw invocationError("cli.source.invalid-kind", `${path} must name a Lua source directory or package file`);
+  const logicalNames = (await cliFileSystem(path, () => readdir(path, { withFileTypes: true })))
     .filter((entry) => entry.isFile() && entry.name.endsWith(".lua"))
     .map((entry) => entry.name)
     .sort();
   if (!logicalNames.includes("device.lua")) {
-    throw new Error(`${path} must contain the exact Lua entry device.lua`);
+    throw expectedCliError("cli.source.entry-missing", `${path} must contain the exact Lua entry device.lua`, "definition");
   }
   const members: readonly LuaSourceMemberCandidate[] = await Promise.all(logicalNames.map(async (logicalName) => ({
     logicalName,
-    sourceBytes: new Uint8Array(await readFile(resolve(path, logicalName))),
+    sourceBytes: new Uint8Array(await cliFileSystem(resolve(path, logicalName), () => readFile(resolve(path, logicalName)))),
   })));
   return (await buildPdpkg(members)).archive;
 }
@@ -210,7 +232,7 @@ async function runAuthoredWorker(options: {
         sources.push(source);
         args[name] = source.argument;
       } else {
-        args[name] = { kind: "value", value: type.kind === "string" || type.kind === "enum" ? value : JSON.parse(value) };
+        args[name] = { kind: "value", value: type.kind === "string" || type.kind === "enum" ? value : parseArgumentValue(name, value) };
       }
     }
     const capture = options.flags.get("capture");
@@ -222,13 +244,13 @@ async function runAuthoredWorker(options: {
     let outcome;
     let savedOutput: Awaited<ReturnType<typeof saveAuthoredOutput>> | undefined;
     if (options.operation.result.kind === "resource" || options.operation.result.kind === "file") {
-      if (options.flags.has("resume")) throw new Error("authored resource output has no resume recipe");
+      if (options.flags.has("resume")) throw invocationError("cli.option.unsupported", "authored resource output has no resume recipe");
       const output = options.flags.get("save-result");
-      if (!output) throw new Error("--save-result is required for declared resource output");
+      if (!output) throw invocationError("cli.option.required", "--save-result is required for declared resource output");
       savedOutput = await saveAuthoredOutput(client, options.operation, args, output, register);
       outcome = savedOutput.outcome;
     } else {
-      if (options.flags.has("save-result")) throw new Error("operation has no declared resource output");
+      if (options.flags.has("save-result")) throw invocationError("cli.option.unsupported", "operation has no declared resource output");
       const request = { operation: options.operation.id, arguments: args };
       const handle = options.flags.has("resume")
         ? await client.resumeTransfer({ ...request, checkpointId: options.flags.get("resume")! as CheckpointId })
@@ -242,7 +264,7 @@ async function runAuthoredWorker(options: {
       : savedOutput === undefined
         ? renderAuthoredCliResult(options.operation.resultControl, outcome.result)
         : `Saved ${savedOutput.byteLength} bytes to ${savedOutput.path}`) + "\n");
-    if (outcome.outcome !== "completed") throw new Error(stringifyGeneratedPublicJson(outcome));
+    if (outcome.outcome !== "completed") throw operationOutcomeError(outcome);
   } finally {
     observations?.dispose();
     await client.disconnect().catch(() => undefined);

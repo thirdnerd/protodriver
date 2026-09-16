@@ -4,7 +4,7 @@ import { StreamingSha256 } from "./streaming-sha256.ts";
 import { TRANSFER_SOURCE_QUANTUM } from "./authored-transfer.ts";
 
 function requireResult(ok: unknown, message: string): asserts ok {
-  if (!ok) throw Object.assign(new Error(message), { error: { code: "authored.result.stream", message, retryability: "no" } });
+  if (!ok) throw Object.assign(new Error(message), { error: { code: "authored.result.stream", message, responsibility: "definition", retryability: "no" } });
 }
 export function validateStreamedResult(r: AuthoredResourceResult, args: AuthoredOperation["arguments"]): number {
   const s = r.streamed!;

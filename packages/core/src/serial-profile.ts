@@ -6,6 +6,7 @@ import type {
 } from "@protodriver/contracts";
 
 export class SerialProfilePolicyError extends Error {
+  readonly responsibility = "definition" as const;
   readonly diagnostic: SerialProfilePolicyDiagnostic;
 
   constructor(diagnostic: SerialProfilePolicyDiagnostic) {

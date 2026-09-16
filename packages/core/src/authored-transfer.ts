@@ -5,7 +5,7 @@ import type { StreamingSource } from "./streaming-source.ts";
 import { resolveTransferSourceRange, type EffectiveSourceRange } from "./effective-source-range.ts";
 
 export function transferFault(code: string, message: string): never {
-  throw Object.assign(new Error(message), { error: { code, message, retryability: "no" } });
+  throw Object.assign(new Error(message), { error: { code, message, responsibility: "definition", retryability: "no" } });
 }
 function requireThat(value: unknown, code: string, message: string): asserts value {
   if (!value) transferFault(code, message);
@@ -297,7 +297,7 @@ export class AuthoredTransfer {
   async #admit(offset: unknown, payloadOffset: unknown, bytes: Uint8Array, length: unknown): Promise<void> {
     const maximum = this.operation.transfer!.maximumCarrierBytes ?? 256;
     if (bytes.length > maximum) throw Object.assign(new Error("carrier exceeds operation declaration"), {
-      error: { code: "authored.transfer.carrier-bound", message: "carrier exceeds operation declaration", retryability: "no",
+      error: { code: "authored.transfer.carrier-bound", message: "carrier exceeds operation declaration", responsibility: "definition", retryability: "no",
         details: { maximumCarrierBytes: maximum, actualBytes: bytes.length, submitted: false } },
     });
     const cp = this.#current();

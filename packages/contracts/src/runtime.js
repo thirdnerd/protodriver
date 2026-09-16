@@ -1,7 +1,7 @@
 // Node runtime surface for the package root. TypeScript consumers use
 // index.ts through the package's `types` condition; keep runtime values here
 // so Node never evaluates the declaration barrel's erased `.js` specifiers.
-export { NOT_REPRESENTABLE } from "./values.ts";
+export { isPdrFailureResponsibility, NOT_REPRESENTABLE } from "./values.ts";
 export { SEMANTIC_UNIT_IDENTIFIERS } from "./units.ts";
 export { TRANSFER_DIGEST_ALGORITHMS, isTransferDigestAlgorithm } from "./transfer.ts";
 export { DEFAULT_CAPTURE_CAPACITY_POLICY, DEFAULT_HOST_RESOURCE_LIMITS } from "./limits.ts";

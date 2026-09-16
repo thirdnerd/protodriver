@@ -92,6 +92,7 @@ export function requireBrowserCaptureCapacity(
   throw Object.assign(new Error(message), { error: {
     code: "capture.capacity.insufficient",
     message,
+    responsibility: "host" as const,
     retryability: "no" as const,
     details: {
       payloadBytes,

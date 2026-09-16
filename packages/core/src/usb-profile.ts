@@ -48,6 +48,7 @@ export function nativeUsbInRequestBytes(
 }
 
 export class UsbProfilePolicyError extends Error {
+  readonly responsibility = "definition" as const;
   readonly diagnostic: UsbProfilePolicyDiagnostic;
 
   constructor(diagnostic: UsbProfilePolicyDiagnostic) {

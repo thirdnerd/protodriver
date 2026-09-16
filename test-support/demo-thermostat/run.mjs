@@ -59,7 +59,16 @@ async function runWithSimulator(packagePath, operation, simulator, flags = []) {
   try {
     await runPdr(["run", packagePath, operation, ...flags, "--json"],
       {input: [], output: sink(output), error: sink(error)}, {authoredAcquisition: acquisition});
-  } catch (cause) { thrown = String(cause?.message ?? cause); }
+  } catch (cause) {
+    const envelope = typeof cause === "object" && cause !== null && "error" in cause
+      && typeof cause.error === "object" && cause.error !== null
+      && typeof cause.error.code === "string"
+      ? cause.error : undefined;
+    thrown = {
+      message: String(cause?.message ?? cause),
+      ...(envelope === undefined ? {} : { error: envelope }),
+    };
+  }
   if (error.length) throw Error(`unexpected CLI stderr: ${Buffer.concat(error)}`);
   const stdout = Buffer.concat(output).toString("utf8").trimEnd();
   return {outcome: stdout ? JSON.parse(stdout) : undefined, thrown, writes};
@@ -69,7 +78,9 @@ function observed(command, result) {
   const lines = [`runPdr ${command}`];
   if (result.outcome?.outcome === "completed") lines.push(`result: ${JSON.stringify(result.outcome.result)}`);
   else if (result.outcome?.error) lines.push(`failure: ${result.outcome.error.details?.name ?? result.outcome.error.code}`);
-  else if (result.thrown) lines.push(`failure: ${result.thrown.replace(/^Authored operation failed: /, "")}`);
+  else if (result.thrown) lines.push(`failure: ${result.thrown.error?.details?.name
+    ?? result.thrown.error?.code
+    ?? result.thrown.message.replace(/^Authored operation failed: /, "")}`);
   else throw Error(`no result or failure for ${command}`);
   lines.push(`wrote: ${result.writes.map((value) => JSON.stringify(value)).join(", ")}`);
   return lines.join("\n");
@@ -98,7 +109,7 @@ export async function runDemoThermostatWalkthrough() {
     const entryBad = await runWithSimulator(entryPackage, "read_status", new DemoThermostatSimulator("wrong-identity"));
     assert.deepEqual(entryGood.writes, ["ID?\r"]);
     assert.equal(entryGood.outcome?.error?.details?.name, "demo-thermostat.not-implemented");
-    assert.equal(entryBad.thrown, "Authored operation failed: demo-thermostat.identity-mismatch");
+    assert.equal(entryBad.thrown?.message, "Authored operation failed: demo-thermostat.identity-mismatch");
     sections.push(observed("read_status [step-2: identified, operation unfinished]", entryGood));
     sections.push(observed("read_status [step-2: wrong identity]", entryBad));
     await command("node apps/cli/src/pdr.ts pack examples/demo-thermostat/step-3 status.pdpkg",

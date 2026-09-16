@@ -20,7 +20,8 @@ test('browser admission reaches v2 controls without granting acquisition', async
   assert.equal(loaded.authored.model.operations[0].id,'echo');assert.equal(loaded.authored.hostGrant,null);
   const client=new DeviceSessionRpcClient(new DirectSessionRpcAdapter(host));t.after(()=>client.close());await client.attach('test');
   assert.deepEqual(await client.resolveCandidates({mode:'main'}),[]);
-  await assert.rejects(client.connect({mode:'main'}),/authored.acquisition.required/);
+  await assert.rejects(client.connect({mode:'main'}),cause=>cause.error?.code==='authored.acquisition.required'
+    && cause.error?.responsibility==='host');
 });
 
 test('browser front door executes with host grant and keeps the generation usable after invalid arguments', async t => {

@@ -92,6 +92,7 @@ function pdrError(code: string, message: string, details?: PdrError["details"]):
   return {
     code,
     message,
+    responsibility: "operation",
     retryability: "no",
     ...(details === undefined ? {} : { details }),
   };
@@ -102,6 +103,7 @@ function causeError(code: string, cause: unknown): PdrError {
   return {
     code,
     message: error.message,
+    responsibility: "host",
     retryability: "unknown",
     platformCause: {
       typeName: error.constructor.name,

@@ -5,13 +5,14 @@ import type { Writable } from "node:stream";
 import { buildPdpkg, readPdpkg, type LuaSourceMemberCandidate } from "@protodriver/contracts";
 import { admitAuthoredModule } from "@protodriver/core/authored-module";
 import { renderAuthoredCliHelp } from "@protodriver/generated-cli";
+import { cliFileSystem, expectedCliError } from "./expected-error.ts";
 
 export async function runInspectCli(
   argv: readonly string[],
   io: { readonly output: Writable },
 ): Promise<void> {
   if (argv.length !== 1) {
-    throw new Error("usage: pdr inspect <device-directory-or-package>");
+    throw expectedCliError("cli.inspect.usage", "usage: pdr inspect <device-directory-or-package>", "invocation");
   }
   const input = await loadInspectionInput(argv[0]!);
   writeRequiredCliDocument("inspect", io.output, renderAuthoredInspection(input));
@@ -33,23 +34,23 @@ type InspectionInput = { readonly module: Awaited<ReturnType<typeof admitAuthore
 
 async function loadInspectionInput(sourcePath: string): Promise<InspectionInput> {
   const source = resolve(sourcePath);
-  const sourceStat = await stat(source);
+  const sourceStat = await cliFileSystem(source, () => stat(source));
   if (sourceStat.isDirectory()) {
-    const names = (await readdir(source, { withFileTypes: true }))
+    const names = (await cliFileSystem(source, () => readdir(source, { withFileTypes: true })))
       .filter((entry) => entry.isFile() && entry.name.endsWith(".lua"))
       .map((entry) => entry.name)
       .sort();
-    if (!names.includes("device.lua")) throw new Error(`${source} must contain the exact Lua entry device.lua`);
+    if (!names.includes("device.lua")) throw expectedCliError("cli.source.entry-missing", `${source} must contain the exact Lua entry device.lua`, "definition");
     const members = await Promise.all(names.map(async (logicalName): Promise<LuaSourceMemberCandidate> => ({
       logicalName,
-      sourceBytes: new Uint8Array(await readFile(resolve(source, logicalName))),
+      sourceBytes: new Uint8Array(await cliFileSystem(resolve(source, logicalName), () => readFile(resolve(source, logicalName)))),
     })));
     return authoredInspection((await buildPdpkg(members)).archive, names);
   }
   if (!sourceStat.isFile()) {
-    throw new Error(`${source} must name a Lua source directory or package file`);
+    throw expectedCliError("cli.source.invalid-kind", `${source} must name a Lua source directory or package file`, "invocation");
   }
-  const bytes = new Uint8Array(await readFile(source));
+  const bytes = new Uint8Array(await cliFileSystem(source, () => readFile(source)));
   const packed = await readPdpkg(bytes);
   return authoredInspection(bytes, packed.members.map(({ logicalName }) => logicalName));
 }
@@ -58,9 +59,8 @@ async function authoredInspection(
   input: Uint8Array | readonly LuaSourceMemberCandidate[],
   members: readonly string[],
 ): Promise<InspectionInput> {
-  const artifact = new Uint8Array(await readFile(
-    new URL("../../../packages/lua-vm/artifacts/protodriver-retained-v2.wasm", import.meta.url),
-  ));
+  const artifactUrl = new URL("../../../packages/lua-vm/artifacts/protodriver-retained-v2.wasm", import.meta.url);
+  const artifact = new Uint8Array(await cliFileSystem("the bundled Lua VM", () => readFile(artifactUrl)));
   return { module: await admitAuthoredModule(input, artifact), members };
 }
 

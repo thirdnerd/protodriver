@@ -62,6 +62,9 @@ If you only have the release archive, use `examples/device-1` in place of
 Running an actual operation is different: it begins acquisition and may perform
 entry writes after selecting a device.
 
+The [`pdr` CLI reference](docs/cli-reference.md) documents commands, structured
+error output, responsibility categories, and process exit statuses.
+
 ## What is in `corpus/`
 
 Six module sources, each a complete `device/v2` declaration plus its Lua

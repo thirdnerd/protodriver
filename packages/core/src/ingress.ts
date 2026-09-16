@@ -156,7 +156,7 @@ export class BoundedIngress {
     catch (cause) {
       try {
         this.#terminate({ kind: "fault", error: { code: "input.retirement.accounting-failed",
-          message: "reliable input custody could not be reserved", retryability: "no" } });
+          message: "reliable input custody could not be reserved", responsibility: "operation", retryability: "no" } });
       } catch { /* pending reads still settle; preserve the accounting failure */ }
       throw cause;
     }

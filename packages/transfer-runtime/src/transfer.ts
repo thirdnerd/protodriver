@@ -17,13 +17,16 @@ import type {
   TransferSettlementObservation,
   TransferStreamingDigest,
 } from "@protodriver/contracts";
+import type { PdrFailureResponsibility } from "@protodriver/contracts";
 
 export class TransferRuntimeError extends Error {
+  readonly responsibility: PdrFailureResponsibility;
   readonly diagnostic: TransferRuntimeDiagnostic;
 
-  constructor(diagnostic: TransferRuntimeDiagnostic) {
+  constructor(diagnostic: TransferRuntimeDiagnostic, responsibility: PdrFailureResponsibility = "operation") {
     super(`${diagnostic.code}: ${diagnostic.message}`);
     this.name = "TransferRuntimeError";
+    this.responsibility = responsibility;
     this.diagnostic = Object.freeze({ ...diagnostic });
   }
 }
@@ -34,6 +37,7 @@ function transferError(
   message: string,
   details?: TransferRuntimeDiagnostic["details"],
   cause?: TransferRuntimeDiagnosticCause,
+  responsibility: PdrFailureResponsibility = "operation",
 ): TransferRuntimeError {
   return new TransferRuntimeError({
     code,
@@ -41,7 +45,7 @@ function transferError(
     message,
     ...(details === undefined ? {} : { details }),
     ...(cause === undefined ? {} : { cause }),
-  });
+  }, responsibility);
 }
 
 function immediateCause(cause: unknown): TransferRuntimeDiagnosticCause {
