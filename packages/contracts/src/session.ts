@@ -15,7 +15,7 @@ import type {
   DiagnosticBatch,
   DiagnosticSubscriptionOptions,
 } from "./capture.js";
-import type { TransferCheckpointPhase, TransferResumeIdentity } from "./transfer.js";
+import type { TransferCheckpointAssurance, TransferCheckpointPhase } from "./transfer.js";
 import type { WriteReceipt } from "./transport.js";
 
 export type SessionId = Brand<string, "SessionId">;
@@ -71,7 +71,7 @@ export interface ResumeTransferRequest extends OperationRequest {
 }
 
 export interface CheckpointAssurance {
-  readonly assurance: TransferResumeIdentity["assurance"];
+  readonly assurance: TransferCheckpointAssurance;
   /** Authored inspection preserves the digest subject, never an implicit file hash. */
   readonly source?: import("./transfer.js").TransferCheckpoint["source"];
 }

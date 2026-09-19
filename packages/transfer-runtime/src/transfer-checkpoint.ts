@@ -90,7 +90,7 @@ function safeInteger(value: number, path: string, minimum = 0): number {
 
 export function validateTransferCheckpoint(checkpoint: TransferCheckpoint): TransferCheckpoint {
   const path = `checkpoints.${checkpoint.id}`;
-  if (checkpoint.formatVersion !== 1) throw checkpointError("transfer.checkpoint-invalid", `${path}.formatVersion`, "unsupported checkpoint format");
+  if (checkpoint.formatVersion !== 2) throw checkpointError("transfer.checkpoint-invalid", `${path}.formatVersion`, "unsupported checkpoint format");
   nonempty(checkpoint.id, `${path}.id`);
   safeInteger(checkpoint.revision, `${path}.revision`);
   lowercaseDigest(checkpoint.manifestHash, `${path}.manifestHash`);
@@ -138,21 +138,17 @@ export function validateTransferCheckpoint(checkpoint: TransferCheckpoint): Tran
   }
   lowercaseDigest(checkpoint.source.digest, `${path}.source.digest`);
   safeInteger(checkpoint.source.byteLength, `${path}.source.byteLength`, 1);
-  if (checkpoint.identity.stableKey !== null) nonempty(checkpoint.identity.stableKey, `${path}.identity.stableKey`);
+  if (!["serial-number", "path-derived", "none"].includes(checkpoint.identity.stableKeyAssurance)) {
+    throw checkpointError("transfer.checkpoint-invalid", `${path}.identity.stableKeyAssurance`, "stable-key assurance is not recognized");
+  }
+  if (checkpoint.identity.stableKeyAssurance === "none") {
+    if (checkpoint.identity.stableKey !== null) {
+      throw checkpointError("transfer.checkpoint-invalid", `${path}.identity.stableKey`, "identity without stable-key assurance must not carry a stable key");
+    }
+  } else if (checkpoint.identity.stableKey === null) {
+    throw checkpointError("transfer.checkpoint-invalid", `${path}.identity.stableKey`, "assured identity must carry a stable key");
+  } else nonempty(checkpoint.identity.stableKey, `${path}.identity.stableKey`);
   if (checkpoint.identity.generation !== null) nonempty(checkpoint.identity.generation, `${path}.identity.generation`);
-  if (checkpoint.identity.assurance !== "verified" && checkpoint.identity.assurance !== "unverified") {
-    throw checkpointError("transfer.checkpoint-invalid", `${path}.identity.assurance`, "identity assurance is not recognized");
-  }
-  const identityAssurance = checkpoint.identity.stableKey === null && checkpoint.identity.generation === null
-    ? "unverified"
-    : "verified";
-  if (checkpoint.identity.assurance !== identityAssurance) {
-    throw checkpointError(
-      "transfer.checkpoint-invalid",
-      `${path}.identity.assurance`,
-      `identity assurance must be ${identityAssurance} for the recorded continuity evidence`,
-    );
-  }
 
   let previousEnd = -1;
   for (const [index, range] of checkpoint.confirmedRanges.entries()) {
@@ -312,13 +308,8 @@ function validateTransferResumeAtStage(
   }
 
   const expectedIdentity = checkpoint.identity;
-  const suppliedAssurance = input.identity.stableKey === null && input.identity.generation === null
-    ? "unverified"
-    : "verified";
-  if (input.identity.assurance !== suppliedAssurance) {
-    throw checkpointError("transfer.resume.identity-mismatch", `${path}.identity.assurance`, "replacement identity assurance contradicts its evidence");
-  }
-  if (expectedIdentity.stableKey !== null && input.identity.stableKey !== expectedIdentity.stableKey) {
+  if (input.identity.stableKeyAssurance !== expectedIdentity.stableKeyAssurance
+      || input.identity.stableKey !== expectedIdentity.stableKey) {
     throw checkpointError("transfer.resume.identity-mismatch", `${path}.identity`, "replacement connection does not match checkpoint identity");
   }
   if (expectedIdentity.generation !== null
@@ -326,9 +317,7 @@ function validateTransferResumeAtStage(
       && !(allowUnknownGeneration && input.identity.generation === null)) {
     throw checkpointError("transfer.resume.identity-mismatch", `${path}.identity`, "replacement connection does not match checkpoint identity");
   }
-  const assurance = expectedIdentity.stableKey !== null || expectedIdentity.generation !== null
-    ? "verified"
-    : "unverified";
+  const assurance = expectedIdentity.stableKeyAssurance === "serial-number" ? "verified" : "unverified";
   const targetStartOffset = safeInteger(input.targetStartOffset ?? 0, `${path}.resume.targetStartOffset`);
   const maximumTargetOffset = targetStartOffset + checkpoint.source.byteLength;
   if (!Number.isSafeInteger(maximumTargetOffset)) {
@@ -658,7 +647,7 @@ export async function executeResumedHostToDeviceTransfer(
       probedGeneration = safeInteger(probeGeneration, `${probePath}.${quiescence.probedGenerationBinding}`);
       assertResumeGeneration(options, probedGeneration, `${probePath}.${quiescence.probedGenerationBinding}`);
       observedIdentity = Object.freeze({
-        assurance: "verified",
+        stableKeyAssurance: options.identity.stableKeyAssurance,
         stableKey: options.identity.stableKey,
         generation: String(probedGeneration),
       });

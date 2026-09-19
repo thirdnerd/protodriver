@@ -3,6 +3,7 @@ import type { Brand } from "./brand.js";
 export type CandidateId = Brand<string, "CandidateId">;
 export type GrantId = Brand<string, "GrantId">;
 export type UsbSpeed = "low" | "full" | "high" | "super" | "super-plus";
+export type StableKeyAssurance = "serial-number" | "path-derived" | "none";
 
 /**
  * What the operator authorized. Serializable BY CONSTRUCTION, because it is
@@ -48,7 +49,7 @@ export type PhysicalDeviceIdentity = {
   readonly usbInterface?: number;
   readonly usbSpeed?: UsbSpeed;
 } & (
-  | { readonly stableKeyAssurance: "serial-number" | "path-derived"; readonly stableKey: string }
+  | { readonly stableKeyAssurance: Exclude<StableKeyAssurance, "none">; readonly stableKey: string }
   | { readonly stableKeyAssurance: "none"; readonly stableKey?: undefined }
 );
 

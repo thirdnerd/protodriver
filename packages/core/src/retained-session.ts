@@ -29,7 +29,7 @@ import { openStreamingSources, type StreamingSource } from "./streaming-source.t
 import { StreamingResult, resolveResultSubject, validateStreamedResult } from "./streaming-result.ts";
 import { ChannelGroup } from "./channel-group.ts";
 import type { AuthoredChannelRoles } from "@protodriver/contracts";
-import { AuthoredTransfer, inspectAuthoredCheckpoint, transferSegmentCount, TRANSFER_SOURCE_QUANTUM, type TransferServiceIdentity } from "./authored-transfer.ts";
+import { AuthoredTransfer, checkpointAssurance, inspectAuthoredCheckpoint, transferSegmentCount, TRANSFER_SOURCE_QUANTUM, type TransferServiceIdentity } from "./authored-transfer.ts";
 import { maximumTransferSourceLength, resolveTransferSourceRange } from "./effective-source-range.ts";
 import { AuthoredPollService, DEFAULT_AUTHORED_POLL_POLICY, grantPollPlans, pollPlans, type PollPlan } from "./authored-poll.ts";
 import type { SessionRpcServer } from "./rpc.ts";
@@ -766,7 +766,8 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
     if (!this.#options.checkpointStore || !this.#options.executionIdentity || !this.#options.checkpointPolicyDigest)
       throw fault("authored.transfer.unavailable", "host has not granted an identity-bound checkpoint store");
     return { execution: this.#options.executionIdentity.digest, mode: this.#options.modeId,
-      device: this.#connection?.identity.stableKey ?? null, policy: this.#options.checkpointPolicyDigest };
+      device: this.#connection?.identity.stableKey ?? null,
+      deviceAssurance: this.#connection?.identity.stableKeyAssurance ?? "none", policy: this.#options.checkpointPolicyDigest };
   }
   async #inspectCheckpoint(id: string) {
     const identity = this.#transferIdentity();
@@ -786,7 +787,7 @@ export class RetainedSessionRpcServer implements SessionRpcServer {
       inspectAuthoredCheckpoint(cp, identity, op);
       if (cp.identity.generation === null) throw fault("transfer.resume.preparation-incomplete", "checkpoint has no completed device binding");
       this.#stamp();
-      return { assurance: cp.identity.assurance, checkpoint: cp };
+      return { assurance: checkpointAssurance(cp), checkpoint: cp };
     } finally {
       // A failed inspection never resumes background device work implicitly.
       // Nor does cancellation free a still-unresolved native storage call.

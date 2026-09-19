@@ -23,14 +23,15 @@ end,resume=function(args,io)
  local src,target=reports:match("^([0-9a-f]+)|([0-9a-f]+)$")
  io.request({kind="transfer-verify",source=src,target=target})
 end}`;
-export function settings(store,resourceBroker,captureDestinationAdapter,observe,name){
+export function settings(store,resourceBroker,captureDestinationAdapter,observe,name,
+  identity={transport:'mock',stableKeyAssurance:'serial-number',stableKey:'service-board-A'}){
   const clock=new VirtualClock();
   const commit=store.commit.bind(store),release=store.release.bind(store);
   store.commit=async(...args)=>{const claim=await commit(...args);observe({kind:'checkpoint',checkpoint:claim.checkpoint});return claim;};
   store.release=async(...args)=>{await release(...args);observe({kind:'claim-released'});};
   return {clock,checkpointStore:store,resourceBroker,captureDestinationAdapter,helpers:{},modeId:'challenge',profileId:'serial',channelId:'main',
     async open(){
-      const connection=new MockTransport(clock).openConnection({identity:{transport:'mock',stableKeyAssurance:'serial-number',stableKey:'service-board-A'},modeId:'challenge',profileId:'serial'});
+      const connection=new MockTransport(clock).openConnection({identity,modeId:'challenge',profileId:'serial'});
       const channel=connection.channel('main'),acquire=channel.acquire.bind(channel);
       channel.acquire=async(...args)=>{
         const lease=await acquire(...args),write=lease.write.bind(lease);

@@ -16,7 +16,7 @@ import { executeHostToDeviceTransferOutcome } from "../src/transfer.ts";
 
 function checkpoint(overrides = {}) {
   return {
-    formatVersion: 1,
+    formatVersion: 2,
     id: "non-hardware-conformance-resume",
     revision: 0,
     manifestHash: "11".repeat(32),
@@ -24,7 +24,7 @@ function checkpoint(overrides = {}) {
     modeId: "bootloader",
     direction: "hostToDevice",
     source: { algorithm: "sha256", digest: "33".repeat(32), byteLength: 1024 },
-    identity: { assurance: "verified", stableKey: "serial:conformance", generation: "generation-7" },
+    identity: { stableKeyAssurance: "serial-number", stableKey: "serial:conformance", generation: "generation-7" },
     phase: "transferring",
     confirmedRanges: [{ targetOffset: 0, length: 512 }],
     finalization: "repeatable",
@@ -67,6 +67,19 @@ test("checkpoint validation rejects an unknown persisted lifecycle phase", async
       && error.diagnostic.code === "transfer.checkpoint-invalid"
       && error.diagnostic.declarationPath.endsWith(".phase"),
   );
+});
+
+test("checkpoint validation refuses provenance-free format-1 records", () => {
+  const old = { ...checkpoint(), formatVersion: 1 };
+  expectCode("transfer.checkpoint-invalid", () => validateTransferResume({
+    checkpoint: old,
+    manifestHash: old.manifestHash,
+    definitionHash: old.definitionHash,
+    modeId: old.modeId,
+    direction: old.direction,
+    sourceDigest: old.source.digest,
+    identity: old.identity,
+  }));
 });
 
 test("resume refuses source, definition, generation, and non-repeatable-finalization changes before admission", () => {
@@ -347,7 +360,7 @@ test("an active non-hardware transfer suspended at half refuses automatic contin
 
 test("absence of physical continuity evidence is reported as unverified, never inferred from probing", () => {
   const base = checkpoint({
-    identity: { assurance: "unverified", stableKey: null, generation: null },
+    identity: { stableKeyAssurance: "none", stableKey: null, generation: null },
   });
   assert.deepEqual(validateTransferResume({
     checkpoint: base,
@@ -356,8 +369,27 @@ test("absence of physical continuity evidence is reported as unverified, never i
     modeId: base.modeId,
     direction: base.direction,
     sourceDigest: base.source.digest,
-    identity: { assurance: "unverified", stableKey: null, generation: null },
+    identity: { stableKeyAssurance: "none", stableKey: null, generation: null },
   }), { assurance: "unverified", confirmedTargetOffset: 512 });
+});
+
+test("device generation does not upgrade path-derived or absent acquisition provenance", () => {
+  for (const identity of [
+    { stableKeyAssurance: "path-derived", stableKey: "/dev/ttyUSB0", generation: "7" },
+    { stableKeyAssurance: "none", stableKey: null, generation: "7" },
+  ]) {
+    const base = checkpoint({ identity });
+    assert.deepEqual(validateTransferResume({
+      checkpoint: base,
+      manifestHash: base.manifestHash,
+      definitionHash: base.definitionHash,
+      modeId: base.modeId,
+      direction: base.direction,
+      sourceDigest: base.source.digest,
+      identity,
+      reportedTargetOffset: 512,
+    }), { assurance: "unverified", confirmedTargetOffset: 512 });
+  }
 });
 
 class MemorySource {
@@ -399,7 +431,7 @@ async function quiescenceResumeHarness({
   const digest = createHash("sha256").update(bytes).digest("hex");
   const initial = checkpoint({
     source: { algorithm: "sha256", digest, byteLength: bytes.byteLength },
-    identity: { assurance: "verified", stableKey: "serial:conformance", generation: "7" },
+    identity: { stableKeyAssurance: "serial-number", stableKey: "serial:conformance", generation: "7" },
   });
   const store = new InMemoryTransferCheckpointStore();
   await store.create(initial);
@@ -487,7 +519,7 @@ async function quiescenceResumeHarness({
     execute: () => executeResumedHostToDeviceTransfer({
       store, claim, manifestHash: initial.manifestHash, definitionHash: initial.definitionHash,
       modeId: initial.modeId,
-      identity: replacementIdentity ?? { assurance: "verified", stableKey: initial.identity.stableKey, generation: null },
+      identity: replacementIdentity ?? { stableKeyAssurance: "serial-number", stableKey: initial.identity.stableKey, generation: null },
       async observeReportedTargetOffset() { throw new Error("declared recipe owns resume observation"); },
       definition, adapter, source: new MemorySource(bytes), digestProvider: new DigestProvider(),
       clock, limits: DEFAULT_HOST_RESOURCE_LIMITS,

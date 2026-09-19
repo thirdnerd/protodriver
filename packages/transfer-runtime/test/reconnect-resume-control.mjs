@@ -11,7 +11,7 @@ import {
 const SOURCE_BYTES = Uint8Array.of(0x10, 0x20, 0x30, 0x40);
 const SOURCE_DIGEST = createHash("sha256").update(SOURCE_BYTES).digest("hex");
 const CHECKPOINT_ID = "reconnect-resume-control";
-const IDENTITY = Object.freeze({ assurance: "unverified", stableKey: null, generation: null });
+const IDENTITY = Object.freeze({ stableKeyAssurance: "none", stableKey: null, generation: null });
 
 const DEFINITION = Object.freeze({
   id: "reconnect-resume-write",
@@ -112,7 +112,7 @@ export async function createOutstandingResumeControl() {
   };
   const store = new InMemoryTransferCheckpointStore();
   await store.create({
-    formatVersion: 1,
+    formatVersion: 2,
     id: CHECKPOINT_ID,
     revision: 0,
     manifestHash: "11".repeat(32),

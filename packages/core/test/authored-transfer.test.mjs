@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 const source=Uint8Array.of(0,128,255,65), sha=b=>createHash('sha256').update(b).digest('hex');
 const test=(name,run)=>nodeTest(name,{timeout:3000},run);
 const operation={id:'write',transfer:{sourceArgument:'image',targetOffset:64,targetLength:128,resumeBinding:'resume',finalization:'repeatable'}};
-const identity={execution:'a'.repeat(64),mode:'application',device:'board-A',policy:'b'.repeat(64)};
+const identity={execution:'a'.repeat(64),mode:'application',device:'board-A',deviceAssurance:'serial-number',policy:'b'.repeat(64)};
 const values=(bytes=source)=>({image:{type:'bytes',encoding:'base64',value:Buffer.from(bytes).toString('base64')},length:4});
 function context(){let live=true,bytes=0,work=0,sequence=0;const observations=[];return {
   live(){assert.ok(live,'revoked');},charge(n){work+=n;assert.ok(work<1000000,'finite service account');},
@@ -19,6 +19,17 @@ async function begin(store=new InMemoryTransferCheckpointStore(),c=context()){
   await s.report('00ff',7,0,0,0);return {s,store,c,id:fields[0]};
 }
 const code=expected=>error=>error.error?.code===expected;
+test('checkpoint format 2 preserves acquisition provenance across device reports',async()=>{
+  for(const [deviceAssurance,device]of [['serial-number','board-A'],['path-derived','/dev/ttyUSB0'],['none',null]]){
+    const store=new InMemoryTransferCheckpointStore(),service=await AuthoredTransfer.prepare(store,operation,values(),
+      {...identity,deviceAssurance,device},context());
+    const id=(await service.open()).split('|')[0];
+    assert.deepEqual((await store.read(id)).identity,{stableKeyAssurance:deviceAssurance,stableKey:device,generation:null});
+    await service.report('00ff',7,0,0,0);
+    assert.deepEqual((await store.read(id)).identity,{stableKeyAssurance:deviceAssurance,stableKey:device,generation:'7'});
+    await service.release();
+  }
+});
 test('B5 bounded input hashes only its selected bytes and refuses subject substitution',async()=>{
   const op={...operation,transfer:{...operation.transfer,sourceRange:{offset:1,length:{argument:'length'}}}};
   const v={...values(),length:2},store=new InMemoryTransferCheckpointStore(),s=await AuthoredTransfer.prepare(store,op,v,identity,context());
@@ -133,12 +144,13 @@ test('changed source and ordinary arguments release the claim and run no carrier
     const claim=await store.claim(id,'next');await store.release(claim);
   }
 });
-test('old, changed execution, device, mode, policy and malformed prefix refuse inspection',async()=>{
+test('old, changed execution, device provenance, mode, policy and malformed prefix refuse inspection',async()=>{
   const {s,store,id}=await begin();const cp=await store.read(id);await s.release();
-  for(const [change,expected]of [[{execution:'c'.repeat(64)},'manifest'],[{device:'board-B'},'identity'],[{mode:'other'},'mode'],[{policy:'e'.repeat(64)},'definition']])
+  for(const [change,expected]of [[{execution:'c'.repeat(64)},'manifest'],[{device:'board-B'},'identity'],[{deviceAssurance:'path-derived'},'identity'],[{mode:'other'},'mode'],[{policy:'e'.repeat(64)},'definition']])
     assert.throws(()=>inspectAuthoredCheckpoint(cp,{...identity,...change}),code('transfer.resume.'+expected+'-mismatch'));
-  const old={...cp};delete old.authoredTransfer;
-  assert.throws(()=>inspectAuthoredCheckpoint(old,identity),code('transfer.checkpoint-invalid'));
+  assert.throws(()=>inspectAuthoredCheckpoint({...cp,formatVersion:1},identity),code('transfer.checkpoint-invalid'));
+  const nonAuthored={...cp};delete nonAuthored.authoredTransfer;
+  assert.throws(()=>inspectAuthoredCheckpoint(nonAuthored,identity),code('transfer.checkpoint-invalid'));
   assert.throws(()=>inspectAuthoredCheckpoint({...cp,confirmedRanges:[{targetOffset:64,length:1}]},identity),code('transfer.checkpoint-invalid'));
 });
 test('cancellation during a real store commit keeps its claim until settlement',async()=>{

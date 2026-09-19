@@ -1,4 +1,5 @@
 import type { Clock } from "./clock.js";
+import type { StableKeyAssurance } from "./acquisition.js";
 import type { HostResourceLimits } from "./limits.js";
 import type { HostByteSource } from "./resources.js";
 import type { PlatformCauseSnapshot } from "./values.js";
@@ -550,14 +551,18 @@ export interface TransferCheckpointRange {
 }
 
 export interface TransferResumeIdentity {
-  readonly assurance: "verified" | "unverified";
+  /** Host acquisition provenance. Device-reported transfer state never upgrades this tier. */
+  readonly stableKeyAssurance: StableKeyAssurance;
   readonly stableKey: string | null;
+  /** Device-reported transfer-state correlation value, not physical identity evidence. */
   readonly generation: string | null;
 }
 
+export type TransferCheckpointAssurance = "verified" | "unverified";
+
 /** Clone-safe durable state. It contains facts, never a live source or connection. */
 export interface TransferCheckpoint {
-  readonly formatVersion: 1;
+  readonly formatVersion: 2;
   readonly id: string;
   readonly revision: number;
   readonly manifestHash: string;

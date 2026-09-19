@@ -24,6 +24,22 @@ test("authored browser coordinator performs exactly one verified resume", async 
   assert.deepEqual(calls.map(([kind]) => kind), ["start", "await", "ack", "inspect", "resume", "await", "ack"]);
 });
 
+test("authored browser coordinator stops for explicit consent when acquisition identity is unverified", async () => {
+  let resumes = 0;
+  const classified = { operationId: "first", outcome: "resume-required", durationMs: 1, result: null,
+    authoredCause: { name: "probe.timeout", details: {} },
+    transferReceipt: { checkpointId: "checkpoint-1", committedSourceOffset: 1, verified: false } };
+  const client = {
+    async startOperation() { return { operationId: "first", acceptedAtSequence: 1 }; },
+    async awaitOperation() { return classified; }, async acknowledgeOperation() {},
+    async inspectTransferCheckpoint() { return { assurance: "unverified" }; },
+    async resumeTransfer() { resumes++; throw new Error("unverified checkpoint must not continue automatically"); },
+  };
+  await assert.rejects(runAuthoredOperationWithOneResume(client, { operation: "write", arguments: {} }),
+    /explicit operator consent is required/);
+  assert.equal(resumes, 0);
+});
+
 test("authored browser coordinator does not turn repeated classification into a retry loop", async () => {
   let starts = 0, resumes = 0;
   const classified = id => ({ operationId: id, outcome: "resume-required", durationMs: 1, result: null,

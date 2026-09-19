@@ -1,4 +1,4 @@
-import type { AuthoredOperation, PublicValue, TransferCheckpoint, TransferCheckpointClaim, TransferCheckpointStore } from "@protodriver/contracts";
+import type { AuthoredOperation, PublicValue, StableKeyAssurance, TransferCheckpoint, TransferCheckpointAssurance, TransferCheckpointClaim, TransferCheckpointStore } from "@protodriver/contracts";
 import { canonicalAuthoredBytes } from "./authored-admission.ts";
 import { nativeArray, nativeKeys, nativeRecord, nativeSort } from "@protodriver/lua-vm/retained";
 import type { StreamingSource } from "./streaming-source.ts";
@@ -51,12 +51,17 @@ export interface TransferServiceIdentity {
   readonly execution: string;
   readonly mode: string;
   readonly device: string | null;
+  readonly deviceAssurance: StableKeyAssurance;
   readonly policy: string;
+}
+
+export function checkpointAssurance(checkpoint: TransferCheckpoint): TransferCheckpointAssurance {
+  return checkpoint.identity.stableKeyAssurance === "serial-number" ? "verified" : "unverified";
 }
 
 /** A compact cumulative-prefix checkpoint. No action-history array grows with DATA. */
 export function inspectAuthoredCheckpoint(value: TransferCheckpoint | null, identity: TransferServiceIdentity, operation?: AuthoredOperation): TransferCheckpoint {
-  requireThat(value && value.formatVersion === 1 && value.authoredTransfer?.version === 1,
+  requireThat(value && value.formatVersion === 2 && value.authoredTransfer?.version === 1,
     "transfer.checkpoint-invalid", "missing or non-authored checkpoint; old checkpoints are not converted");
   const a = value.authoredTransfer;
   const subject = value.source?.subject;
@@ -79,11 +84,10 @@ export function inspectAuthoredCheckpoint(value: TransferCheckpoint | null, iden
       && value.confirmedRanges[0]!.length <= a.admittedEnd)), "transfer.checkpoint-invalid", "invalid authored checkpoint fields");
   requireThat(value.manifestHash === identity.execution, "transfer.resume.manifest-mismatch", "complete execution identity changed");
   requireThat(value.modeId === identity.mode, "transfer.resume.mode-mismatch", "mode changed");
-  requireThat(value.identity?.stableKey === identity.device, "transfer.resume.identity-mismatch", "host device identity changed");
+  requireThat(value.identity?.stableKeyAssurance === identity.deviceAssurance && value.identity.stableKey === identity.device,
+    "transfer.resume.identity-mismatch", "host device identity changed");
   requireThat(value.identity.generation === null || (typeof value.identity.generation === "string" && /^[0-9]{1,16}$/.test(value.identity.generation)),
     "transfer.checkpoint-invalid", "invalid generation");
-  requireThat(value.identity.assurance === (identity.device !== null || value.identity.generation !== null ? "verified" : "unverified"),
-    "transfer.checkpoint-invalid", "identity assurance does not follow recorded evidence");
   requireThat(a.policyDigest === identity.policy, "transfer.resume.definition-mismatch", "settlement resource policy changed");
   if (operation) {
     requireThat(operation.id === a.operation && operation.transfer, "transfer.resume.definition-mismatch", "operation or transfer service changed");
@@ -251,11 +255,11 @@ export class AuthoredTransfer {
     requireThat(!this.receipt, "transfer.checkpoint-invalid", "completed transfer cannot create a second checkpoint");
     if (!this.#claim) {
       const config = this.operation.transfer!;
-      const checkpoint: TransferCheckpoint = { formatVersion: 1, id: "authored-" + crypto.randomUUID(), revision: 0,
+      const checkpoint: TransferCheckpoint = { formatVersion: 2, id: "authored-" + crypto.randomUUID(), revision: 0,
         manifestHash: this.#identity.execution, definitionHash: this.#definitionDigest, modeId: this.#identity.mode,
         direction: "hostToDevice", source: { algorithm: "sha256", digest: this.#sourceDigest, byteLength: this.#length,
           ...(this.sourceSubject ? { subject: this.sourceSubject } : {}) },
-        identity: { stableKey: this.#identity.device, generation: null, assurance: this.#identity.device === null ? "unverified" : "verified" },
+        identity: { stableKeyAssurance: this.#identity.deviceAssurance, stableKey: this.#identity.device, generation: null },
         phase: "preparing", confirmedRanges: [], finalization: config.finalization,
         authoredTransfer: { version: 1, operation: this.operation.id, argumentsDigest: this.#argumentsDigest,
           policyDigest: this.#identity.policy, targetOffset: config.targetOffset, targetLength: config.targetLength, admittedEnd: 0, cookie: "",
@@ -284,7 +288,7 @@ export class AuthoredTransfer {
     if (cp.identity.generation !== null) requireThat(cp.identity.generation === String(generation) && a.cookie === cookie,
       "transfer.resume.identity-mismatch", "decoded device cookie or transfer generation changed");
     else requireThat(!this.#resuming, "transfer.resume.preparation-incomplete", "interrupted begin has no bound device generation");
-    await this.#commit({ phase: "transferring", identity: { ...cp.identity, generation: String(generation), assurance: "verified" },
+    await this.#commit({ phase: "transferring", identity: { ...cp.identity, generation: String(generation) },
       authoredTransfer: { ...a, cookie, ...(this.#stream ? { streamed: { ...a.streamed!, committedDigest: this.#stream.commit(committed) } } : {}) },
       confirmedRanges: committed ? [{ targetOffset: a.targetOffset, length: committed }] : [] });
     this.#quiet = buffered === 0 && volatile === committed;

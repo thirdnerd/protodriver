@@ -3,7 +3,7 @@ import test from 'node:test';
 import {AuthoredTransfer} from '../src/authored-transfer.ts';
 import {InMemoryTransferCheckpointStore} from '../../transfer-runtime/src/transfer-checkpoint.ts';
 const op={id:'write',transfer:{sourceArgument:'image',targetOffset:64,targetLength:128,resumeBinding:'resume',finalization:'repeatable'}};
-const identity={execution:'a'.repeat(64),mode:'m',device:'board',policy:'b'.repeat(64)};
+const identity={execution:'a'.repeat(64),mode:'m',device:'board',deviceAssurance:'serial-number',policy:'b'.repeat(64)};
 const code=value=>e=>e.error?.code===value;
 function account(){let live=true,n=0,work=0,held=0;return {
  live(){assert.ok(live,'revoked');},revoke(){live=false;},charge(v){work+=v;},native:fn=>fn(),

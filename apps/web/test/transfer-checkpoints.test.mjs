@@ -88,7 +88,7 @@ class FakeLockManager {
 
 function checkpoint(revision = 0) {
   return {
-    formatVersion: 1,
+    formatVersion: 2,
     id: "non-hardware-browser-checkpoint",
     revision,
     manifestHash: "11".repeat(32),
@@ -96,7 +96,7 @@ function checkpoint(revision = 0) {
     modeId: "bootloader",
     direction: "hostToDevice",
     source: { algorithm: "sha256", digest: "33".repeat(32), byteLength: 1024 },
-    identity: { assurance: "verified", stableKey: "serial:conformance", generation: "generation-7" },
+    identity: { stableKeyAssurance: "serial-number", stableKey: "serial:conformance", generation: "generation-7" },
     phase: "preparing",
     confirmedRanges: revision === 0 ? [] : [{ targetOffset: 0, length: 512 }],
     finalization: "repeatable",

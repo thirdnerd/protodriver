@@ -167,7 +167,7 @@ export class ManifestWindowCommands {
 
 export function checkpoint(revision = 0, confirmedRanges = []) {
   return {
-    formatVersion: 1,
+    formatVersion: 2,
     id: "non-hardware-conformance-resume",
     revision,
     manifestHash: "11".repeat(32),
@@ -175,7 +175,7 @@ export function checkpoint(revision = 0, confirmedRanges = []) {
     modeId: "bootloader",
     direction: "hostToDevice",
     source: { algorithm: "sha256", digest: CHECKPOINT_DIGEST, byteLength: CHECKPOINT_BYTES.byteLength },
-    identity: { assurance: "verified", stableKey: "serial:conformance", generation: "generation-7" },
+    identity: { stableKeyAssurance: "serial-number", stableKey: "serial:conformance", generation: "generation-7" },
     phase: "preparing",
     confirmedRanges,
     finalization: "repeatable",

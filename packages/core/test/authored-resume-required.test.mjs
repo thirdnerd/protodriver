@@ -22,9 +22,9 @@ const unresolvedSource = source
     'io.request({kind="timer-arm",milliseconds=1000})\n io.request({kind="transfer-resume-required",name="probe.response-timeout",details={stage="settlement"}})');
 assert.notEqual(unresolvedSource, source, "unresolved-effect fixture anchor changed");
 
-async function harness(t, authoredSource, name) {
+async function harness(t, authoredSource, name, identity) {
   const store = new InMemoryTransferCheckpointStore(), broker = new ResourceBrokerHost(), observed = observations();
-  const options = settings(store, new ResourceBrokerRpcClient(new DirectResourceRpcAdapter(broker)), {}, event => observed.add(event), name);
+  const options = settings(store, new ResourceBrokerRpcClient(new DirectResourceRpcAdapter(broker)), {}, event => observed.add(event), name, identity);
   const members = [
     { logicalName: "pdpkg.json", sourceBytes: Buffer.from('{"packageFormat":1,"generatorContract":2}') },
     { logicalName: "device.lua", sourceBytes: Buffer.from(authoredSource) },
@@ -56,6 +56,22 @@ test("host admits authored resume-required and a bounded continuation completes"
   const completed = await client.awaitOperation(resumed.operationId);
   assert.equal(completed.outcome, "completed", JSON.stringify(completed));
 });
+
+for (const [stableKeyAssurance, stableKey] of [["none", undefined], ["path-derived", "/dev/ttyUSB0"]]) {
+  test(`device generation does not upgrade ${stableKeyAssurance} acquisition assurance`, { timeout: 5000 }, async t => {
+    const identity = { transport: "mock", stableKeyAssurance, ...(stableKey === undefined ? {} : { stableKey }) };
+    const { client, request, rewind } = await harness(t, source, `resume-required-${stableKeyAssurance}`, identity);
+    const first = await client.startOperation(request), classified = await client.awaitOperation(first.operationId);
+    assert.equal(classified.outcome, "resume-required");
+    const checkpointId = classified.transferReceipt?.checkpointId;
+    await client.acknowledgeOperation(first.operationId);
+    assert.equal((await client.inspectTransferCheckpoint(checkpointId)).assurance, "unverified");
+    rewind();
+    const resumed = await client.resumeTransfer({ ...request, checkpointId });
+    assert.equal(resumed.assurance, "unverified", "explicit resume must preserve the operator-consent classification");
+    assert.equal((await client.awaitOperation(resumed.operationId)).outcome, "completed");
+  });
+}
 
 test("resume-required refuses an activation with an unresolved native timer", { timeout: 5000 }, async t => {
   const { client, request } = await harness(t, unresolvedSource, "resume-required-unresolved-timer");

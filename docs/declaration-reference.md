@@ -625,6 +625,20 @@ They do not replace the device protocol’s acknowledgements or durable evidence
 The Device 3 module is the complete source for query, begin, segmented writes,
 window reports, final verification, resume identity, and abort cleanup.
 
+Checkpoint identity preserves the host acquisition tier. A serial-number key
+may establish physical continuity; a path-derived key is only a locator, and
+absence of a stable key provides no host identity evidence. Device-reported
+generation and cookie values correlate durable transfer state and are compared
+for equality during reconciliation. They carry no contractual proof of
+physical-device continuity: generation may be an ordinary monotonic
+per-transfer counter, and neither value is required to be unique across units,
+power cycles, or reset domains.
+
+A protocol value must not stand in for serial-number identity merely because it
+matches a checkpoint. Such a facility would require a separate, explicit
+durable-transfer-token declaration with defined collision and reset properties;
+no such declaration exists in contract 2.
+
 An active transfer may end an attempt as not finished, without calling it a
 failure:
 
@@ -643,11 +657,12 @@ failure, and returning a record containing `resume-required` remains ordinary
 successful result data.
 
 The request does not claim that the device is already quiet. Resume still
-enters the declared `resumeBinding`; that binding must report the same device
-identity and a quiet boundary (`volatile == committed`, zero buffered work)
-before any new transfer DATA. The browser performs at most one automatic
-continuation for a verified checkpoint. Unverified identity needs explicit
-operator consent, and a second not-finished outcome stops visibly.
+enters the declared `resumeBinding`; that binding must report the same
+checkpointed transfer-state correlation values and a quiet boundary
+(`volatile == committed`, zero buffered work) before any new transfer DATA.
+The browser performs at most one automatic continuation for a checkpoint with
+serial-number acquisition provenance. Path-derived or absent identity needs
+explicit operator consent, and a second not-finished outcome stops visibly.
 
 ## Admission and debugging order
 

@@ -59,7 +59,7 @@ test('late source completion keeps its native slot, is accounted and cannot ente
   assert.equal(h.host.metrics.currentReadBufferBytes,256);gate.resolve();await pending;
   assert.equal(h.observations.find(e=>e.kind==='source-read').bytes,256);await h.s.release();assert.equal(h.held,0);
 });
-const identity={execution:'a'.repeat(64),mode:'main',device:'device-A',policy:'b'.repeat(64)};
+const identity={execution:'a'.repeat(64),mode:'main',device:'device-A',deviceAssurance:'serial-number',policy:'b'.repeat(64)};
 test('B5 explicit range needs no out-of-range EOF probe but early EOF still refuses',{timeout:3000},async()=>{
  const h=await harness(8,{extra:1,emptyEof:true});h.s.selectTransferRange({offset:2,length:4});await h.s.seek(0);
  assert.deepEqual([...await h.s.read(256)],[2,3,4,5].map(octet));assert.equal(h.p.reads,1);assert.equal((await h.s.read(256)).length,0);await h.s.release();
