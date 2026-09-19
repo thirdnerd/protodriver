@@ -269,7 +269,10 @@ ${wrongGuideAssertions}
   Assert-True ($workerRunStatus -ne 0) "worker command unexpectedly found a device"
   $workerStdout = Get-Content -Raw -LiteralPath $workerStdoutPath
   $workerStderr = Get-Content -Raw -LiteralPath $workerStderrPath
-  Assert-True ($workerStderr.Contains("no candidate matches connection profile")) "worker run failed before device discovery"
+  $workerFailure = $workerStderr | ConvertFrom-Json
+  Assert-True ($workerFailure.category -eq "invocation") "worker serial refusal has the wrong category"
+  Assert-True ($workerFailure.error.responsibility -eq "invocation") "worker serial refusal has the wrong responsibility"
+  Assert-True ($workerFailure.error.code -eq "authored.acquisition.worker-serial-unavailable") "worker serial refusal has the wrong code"
 
   $nativeText = & $node (Join-Path $packageRoot "app\\native-smoke.js")
   Assert-True ($LASTEXITCODE -eq 0) "native smoke failed"
