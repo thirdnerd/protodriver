@@ -30,7 +30,7 @@ export function renderAuthoredCliHelp(description: AuthoredDescription, operatio
     return renderAuthoredOperationHelpDocument({
       heading: `${displayName} — ${operation.title}`,
       description: operation.description,
-      usage: `pdr run <package> [--mode id] [--profile id] [--candidate id] [--expect-source-set-sha256 hex] [--json]${operation.result.kind === "file" || operation.result.kind === "resource" ? " [--save-result path]" : ""} ${operation.id}${Object.keys(operation.arguments).length === 0 ? "" : " [flags]"}`,
+      usage: `pdr run <package> [--mode id] [--profile id] [--candidate id | --serial-path path] [--expect-source-set-sha256 hex] [--json]${operation.result.kind === "file" || operation.result.kind === "resource" ? " [--save-result path]" : ""} ${operation.id}${Object.keys(operation.arguments).length === 0 ? "" : " [flags]"}`,
       risk: operation.risk,
       repeatability: operation.repeatability,
       inputs,

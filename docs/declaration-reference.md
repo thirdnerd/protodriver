@@ -56,10 +56,12 @@ must resolve inside the same declaration.
 
 ## Connection profiles
 
-A connection profile is a request, never a grant. The host enumerates and the
-operator or host policy selects a candidate; the host then revalidates the
-candidate against this inert description before it constructs an authored
-session.
+A connection profile is a request, never a grant. In ordinary discovery the
+host enumerates, applies the profile's descriptor filters, and the operator or
+host policy selects a matching candidate. A trusted host may instead construct
+an explicit operator grant outside those descriptor filters; package data
+cannot name that host resource. The host still enforces the admitted transport,
+mode, profile, and transport policy before it constructs an authored session.
 
 A serial profile declares its modes, serial acquisition filters, exact line
 parameters, one named channel with its protocol duplex, and lifecycle policy.

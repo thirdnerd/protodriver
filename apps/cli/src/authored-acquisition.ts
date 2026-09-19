@@ -4,7 +4,13 @@ import type { AuthoredDescription } from "@protodriver/contracts";
 import { RealClock } from "@protodriver/core/clock";
 import { DEFAULT_AUTHORED_POLL_POLICY, grantRequiredPollPlans, pollPlans } from "@protodriver/core/authored-poll";
 import type { NodeAuthoredAcquisition } from "./authored-run.ts";
-import { listNodeAuthoredCandidates } from "./node-authored-candidates.ts";
+import {
+  listNodeAuthoredCandidates,
+  nodeSerialPathCandidate,
+  isSerialProfile,
+  type SerialProfile,
+  type SelectedAuthoredCandidate,
+} from "./node-authored-candidates.ts";
 import { NodeTransferCheckpointStore } from "./transfer-checkpoints.ts";
 import { expectedCliError } from "./expected-error.ts";
 
@@ -26,15 +32,38 @@ export function createNodeAuthoredAcquisition(
 ): NodeAuthoredAcquisition {
   return async (description, selection) => {
     const { modeId, profileId, profile } = selectAuthoredProfile(description, selection);
+    if (selection.candidateId !== undefined && selection.serialPath !== undefined) {
+      throw expectedCliError("cli.option.conflict", "--candidate and --serial-path are mutually exclusive", "invocation");
+    }
+    if (selection.serialPath !== undefined && selection.serialPath.length === 0) {
+      throw expectedCliError("cli.option.value-required", "--serial-path requires a nonempty path", "invocation");
+    }
+    let direct: { readonly profile: SerialProfile; readonly path: string } | undefined;
+    if (selection.serialPath !== undefined) {
+      const selectedProfile = { ...profile, id: profileId };
+      if (!isSerialProfile(selectedProfile)) {
+        throw expectedCliError("authored.acquisition.serial-path-profile",
+          `--serial-path requires a serial connection profile; ${profileId} uses ${profile.transport.kind}`, "invocation");
+      }
+      direct = { profile: selectedProfile, path: selection.serialPath };
+    }
     const pollPolicy = grantRequiredPollPlans(pollPlans(description), DEFAULT_AUTHORED_POLL_POLICY,
       { minimumIntervalMs: 200, maximumNominalPollsPerSecond: 5 });
     const clock = new RealClock();
-    let candidates;
-    try { candidates = await enumerate({ ...profile, id: profileId }, modeId, clock); }
-    catch (cause) { throw expectedCliError("authored.acquisition.refused", String(cause) + "; an explicit F87 host-supplied grant remains available", "host", cause); }
-    const selected = selection.candidateId === undefined
-      ? candidates.length === 1 ? candidates[0] : undefined
-      : candidates.find(({ candidate }) => candidate.candidateId === selection.candidateId);
+    let candidates: SelectedAuthoredCandidate[] = [];
+    let selected: SelectedAuthoredCandidate | undefined;
+    try {
+      if (direct !== undefined) {
+        selected = nodeSerialPathCandidate(direct.profile, modeId, clock, direct.path);
+      } else {
+        candidates = await enumerate({ ...profile, id: profileId }, modeId, clock);
+        selected = selection.candidateId === undefined
+          ? candidates.length === 1 ? candidates[0] : undefined
+          : candidates.find(({ candidate }) => candidate.candidateId === selection.candidateId);
+      }
+    } catch (cause) {
+      throw expectedCliError("authored.acquisition.refused", String(cause) + "; an explicit F87 host-supplied grant remains available", "host", cause);
+    }
     if (!selected) throw expectedCliError("authored.acquisition.candidate", (candidates.length
       ? "device selection is required; pass --candidate with one of " + candidates.map(({ candidate }) => `${candidate.candidateId} (${candidate.displayName})`).join(", ")
       : "no candidate matches connection profile " + profileId), "invocation");

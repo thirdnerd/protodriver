@@ -7,6 +7,7 @@ import { Writable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { runPdr } from '../src/pdr.ts';
 import { createNodeAuthoredAcquisition } from '../src/authored-acquisition.ts';
+import { assertStockNodeWorkerTransport } from '../src/authored-worker-session.ts';
 import { buildPdpkg } from '../../../packages/contracts/src/pdpkg.ts';
 import { MockTransport } from '../../../packages/transport-mock/src/index.ts';
 import { admitAuthoredDescription } from '../../../packages/core/src/authored-admission.ts';
@@ -209,6 +210,22 @@ test('pdr help never enumerates; ambiguous candidates list all and never open',a
   assert.equal(opens,0);
 });
 
+test('pdr refuses candidate and serial-path together before acquisition',async t=>{
+  const c=await setup(t,'device-2',['device.lua']);let acquisitions=0;
+  await assert.rejects(runPdr(['run',c.path,'get_rate','--mode','silent','--candidate','opaque',
+    '--serial-path','/dev/pts/3'],c.io,{authoredAcquisition:async()=>{acquisitions++;throw Error('must not acquire');}}),
+  error=>error.error?.code==='cli.option.conflict'&&error.error.responsibility==='invocation');
+  assert.equal(acquisitions,0);
+});
+
+test('pdr refuses serial-path for an admitted USB profile as an invocation error',async t=>{
+  const c=await setup(t,'ti84-plus-ce/module',['device.lua','directlink.lua','bmp.lua']);
+  await assert.rejects(runPdr(['run',c.path,'capture_screenshot','--serial-path','/dev/pts/3',
+    '--save-result',join(c.root,'unused.bmp')],c.io),
+  error=>error.error?.code==='authored.acquisition.serial-path-profile'
+    &&error.error.responsibility==='invocation');
+});
+
 test('device-3 pdr exposes two distinct profiles and refuses to flatten selection',async t=>{
   // Unique regression: device-3's directional USB channels being flattened into serial main or one implicit profile.
   const c=await setup(t,'device-3',[{file:'device3.lua',logicalName:'device.lua'}]);let enumerations=0;
@@ -249,6 +266,30 @@ test('device-2 serialized pdr carries the selected silent mode into worker const
   const c=await setup(t,'device-2',['device.lua']);
   await runPdr(['--worker','run',c.path,'get_device_info','--mode','silent','--json'],c.io,{worker:{workerUrl:authoredWorker}});
   assert.deepEqual(JSON.parse(c.text()).result,{identity:'1234ABCD,1.0'});
+});
+
+test('device-2 host-supplied worker carries an operator-named serial path through its boundary',async t=>{
+  const c=await setup(t,'device-2',['device.lua']);
+  await runPdr(['--worker','run',c.path,'get_device_info','--mode','silent','--serial-path','/dev/pts/worker-fixture','--json'],
+    c.io,{worker:{workerUrl:authoredWorker}});
+  assert.deepEqual(JSON.parse(c.text()).result,{identity:'SERIAL-PATH,1.0'});
+});
+
+test('stock worker refuses both enumerated and operator-named serial acquisition before opening',async t=>{
+  const c=await setup(t,'device-2',['device.lua']);
+  for(const extra of [[],['--serial-path','/dev/pts/3']]){
+    await assert.rejects(runPdr(['--worker','run',c.path,'get_rate','--mode','silent',...extra],c.io,{worker:{}}),
+      error=>error.error?.code==='authored.acquisition.worker-serial-unavailable'
+        &&error.error.responsibility==='invocation');
+  }
+});
+
+test('stock worker refuses native serial while USB remains available',()=>{
+  assert.throws(()=>assertStockNodeWorkerTransport(serial()),
+    error=>error.error?.code==='authored.acquisition.worker-serial-unavailable'
+      &&error.error.responsibility==='invocation');
+  assert.doesNotThrow(()=>assertStockNodeWorkerTransport({modes:['main'],acquisitionFilters:[{transport:'usb'}],
+    transport:{kind:'usb'}}));
 });
 
 test('CE serialized pdr retains worker-owned USB execution and resource delivery',async t=>{

@@ -29,6 +29,7 @@ export interface AuthoredWorkerOpenRequest<SessionInput> {
   readonly modeId: string;
   readonly profileId?: string;
   readonly candidateId?: string;
+  readonly serialPath?: string;
   readonly generatedLua?: SessionInput;
 }
 

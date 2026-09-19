@@ -12,7 +12,7 @@ import { registerAuthoredFileArgument, renderAuthoredCliHelp, renderAuthoredCliR
 import { NodeCaptureDestination } from "./capture-destination.ts";
 import { createNodeAuthoredAcquisition, selectAuthoredProfile } from "./authored-acquisition.ts";
 import { createWorkerNodeAuthoredRunDependencies, type WorkerNodeAuthoredRunOptions } from "./authored-worker-client.ts";
-import type { AuthoredWorkerSessionInput } from "./authored-worker-session.ts";
+import { assertStockNodeWorkerTransport, type AuthoredWorkerSessionInput } from "./authored-worker-session.ts";
 import { cliFileSystem, expectedCliError } from "./expected-error.ts";
 
 const DEFAULT_CLI_CAPTURE_SIDECAR_THRESHOLD_BYTES = 1024 * 1024;
@@ -34,8 +34,15 @@ function operationOutcomeError(outcome: import("@protodriver/contracts").Operati
   return expectedCliError("cli.operation.incomplete", `operation ended ${outcome.outcome} without an error`, "operation");
 }
 
+export interface NodeAuthoredSelection {
+  readonly modeId?: string;
+  readonly profileId?: string;
+  readonly candidateId?: string;
+  readonly serialPath?: string;
+}
+
 export type NodeAuthoredAcquisition = (description: AuthoredDescription,
-  selection: { readonly modeId?: string; readonly profileId?: string; readonly candidateId?: string }) => Promise<AuthoredHostGrant>;
+  selection: NodeAuthoredSelection) => Promise<AuthoredHostGrant>;
 
 export interface AuthoredRunIo {
   readonly input?: AsyncIterable<Uint8Array | string>;
@@ -46,7 +53,7 @@ export interface AuthoredRunIo {
 export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
   acquire?: NodeAuthoredAcquisition, workerOptions?: WorkerNodeAuthoredRunOptions): Promise<void> {
   const path = argv[0];
-  if (!path) throw invocationError("cli.run.usage", "usage: pdr run <device-directory-or-package> [--mode id] <operation> [flags]");
+  if (!path) throw invocationError("cli.run.usage", "usage: pdr run <device-directory-or-package> [--mode id] [--profile id] [--candidate id | --serial-path path] <operation> [flags]");
   const archive = await loadAuthoredArchive(path);
   const artifact = new Uint8Array(await cliFileSystem("the bundled Lua VM", () => readFile(new URL("../../../packages/lua-vm/artifacts/protodriver-retained-v2.wasm", import.meta.url))));
   const flags = new Map<string, string>();
@@ -63,6 +70,9 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
     else { const value = argv[++i]; if (value === undefined || value.startsWith("--")) throw invocationError("cli.option.value-required", "value required for " + token); flags.set(key, value); }
   }
   const expected = flags.get("expect-source-set-sha256");
+  if (flags.has("candidate") && flags.has("serial-path")) {
+    throw invocationError("cli.option.conflict", "--candidate and --serial-path are mutually exclusive");
+  }
   const module = await admitAuthoredModule(archive, artifact,
     expected === undefined ? {} : { expectedSourceSetSha256: expected });
   const model = generateAuthoredControlModel(module.description);
@@ -76,20 +86,22 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
     io.output.write(renderAuthoredCliHelp(module.description, operationId));
     return;
   }
-  const reserved = new Set(["mode", "profile", "candidate", "capture", "json", "save-result", "resume", "expect-source-set-sha256"]);
+  const reserved = new Set(["mode", "profile", "candidate", "serial-path", "capture", "json", "save-result", "resume", "expect-source-set-sha256"]);
   for (const key of flags.keys()) if (!reserved.has(key) && !Object.hasOwn(operation.arguments, key)) throw invocationError("cli.option.unknown", "unknown option: --" + key);
   for (const key of Object.keys(operation.arguments)) if (!flags.has(key)) throw invocationError("cli.argument.missing", "missing argument: --" + key);
-  let selection = {
+  let selection: NodeAuthoredSelection = {
     ...(flags.has("mode") ? { modeId: flags.get("mode")! } : {}),
     ...(flags.has("profile") ? { profileId: flags.get("profile")! } : {}),
     ...(flags.has("candidate") ? { candidateId: flags.get("candidate")! } : {}),
+    ...(flags.has("serial-path") ? { serialPath: flags.get("serial-path")! } : {}),
   };
   if (module.description.connectionProfiles) {
     const selected = selectAuthoredProfile(module.description, selection);
     if (!operation.availability.modes.includes(selected.modeId) || !operation.availability.profiles.includes(selected.profileId))
       throw expectedCliError("authored.acquisition.operation-unavailable", "operation does not allow the selected mode/profile", "invocation");
     selection = { modeId: selected.modeId, profileId: selected.profileId,
-      ...(selection.candidateId === undefined ? {} : { candidateId: selection.candidateId }) };
+      ...(selection.candidateId === undefined ? {} : { candidateId: selection.candidateId }),
+      ...(selection.serialPath === undefined ? {} : { serialPath: selection.serialPath }) };
   }
   if (workerOptions !== undefined) {
     if (acquire !== undefined) {
@@ -98,12 +110,16 @@ export async function runAuthoredCli(argv: readonly string[], io: AuthoredRunIo,
     if (!module.description.connectionProfiles || selection.modeId === undefined || selection.profileId === undefined) {
       throw expectedCliError("authored.acquisition.required", "serialized worker needs an admitted physical connection profile", "host");
     }
+    if (workerOptions.workerUrl === undefined) {
+      assertStockNodeWorkerTransport(module.description.connectionProfiles[selection.profileId]!);
+    }
     await runAuthoredWorker({ path, archive,
       ...(expected === undefined ? {} : { expected }),
       flags, operation, model, selection: {
       modeId: selection.modeId,
       profileId: selection.profileId,
       ...(selection.candidateId === undefined ? {} : { candidateId: selection.candidateId }),
+      ...(selection.serialPath === undefined ? {} : { serialPath: selection.serialPath }),
     }, io, workerOptions });
     return;
   }
@@ -214,6 +230,7 @@ async function runAuthoredWorker(options: {
     modeId: options.selection.modeId,
     profileId: options.selection.profileId,
     ...(options.selection.candidateId === undefined ? {} : { candidateId: options.selection.candidateId }),
+    ...(options.selection.serialPath === undefined ? {} : { serialPath: options.selection.serialPath }),
     generatedLua,
   });
   const sources: Array<{ close(): Promise<void> }> = [];

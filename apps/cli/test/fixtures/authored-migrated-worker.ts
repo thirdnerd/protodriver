@@ -34,7 +34,7 @@ if (profile === undefined || !profile.modes.includes(input.selection.modeId)) {
   throw new Error("fixture selection does not match the worker-admitted description");
 }
 const clock = new RealClock();
-const exchange = await exchangeFor(module.description.id);
+const exchange = await exchangeFor(module.description.id, input.selection.serialPath);
 const pollPolicy = grantRequiredPollPlans(pollPlans(module.description), DEFAULT_AUTHORED_POLL_POLICY,
   { minimumIntervalMs: 200, maximumNominalPollsPerSecond: 5 });
 const resources = new PostMessageResourceRpcAdapter(data.resourcePort as never);
@@ -75,7 +75,7 @@ const { server } = await createAuthoredSession(data.request.canonicalBytes, arti
 });
 serveSessionRpc(data.sessionPort as never, server);
 
-async function exchangeFor(id: string): Promise<(bytes: Buffer) => readonly Uint8Array[]> {
+async function exchangeFor(id: string, serialPath?: string): Promise<(bytes: Buffer) => readonly Uint8Array[]> {
   if (id === "d1-chan") {
     const replies = new Map([
       ["50534541524348", "06503133474d5253"], ["503133474d5253", "06"],
@@ -84,8 +84,13 @@ async function exchangeFor(id: string): Promise<(bytes: Buffer) => readonly Uint
     return bytes => [Buffer.from(requireReply(replies, bytes), "hex")];
   }
   if (id === "device-2-authored") {
+    if (serialPath !== undefined && serialPath !== "/dev/pts/worker-fixture") {
+      throw new Error("device-2 worker fixture received the wrong serial path");
+    }
     return bytes => {
-      if (bytes.toString() === "*IDN?\r\n") return [Buffer.from("D2-LABS,D2-MON,1234ABCD,1.0\r\n")];
+      if (bytes.toString() === "*IDN?\r\n") return [Buffer.from(serialPath === undefined
+        ? "D2-LABS,D2-MON,1234ABCD,1.0\r\n"
+        : "D2-LABS,D2-MON,SERIAL-PATH,1.0\r\n")];
       if (bytes.toString() === "CONF:RATE?\r\n") return [Buffer.from("1000\r\n")];
       throw new Error("device-2 worker fixture saw an unrequested write");
     };

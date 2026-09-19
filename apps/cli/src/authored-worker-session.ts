@@ -7,6 +7,7 @@ import type { ResourceBrokerClient } from "@protodriver/contracts";
 import type { AuthoredWorkerOpenRequest } from "./authored-worker-client.ts";
 
 import { createNodeAuthoredAcquisition } from "./authored-acquisition.ts";
+import { expectedCliError } from "./expected-error.ts";
 
 export interface AuthoredWorkerSessionInput {
   readonly kind: "authored-v2";
@@ -14,6 +15,7 @@ export interface AuthoredWorkerSessionInput {
     readonly modeId: string;
     readonly profileId: string;
     readonly candidateId?: string;
+    readonly serialPath?: string;
   };
   readonly expectedSourceSetSha256?: string;
 }
@@ -42,6 +44,7 @@ export async function createNodeAuthoredWorkerSession(
       ? {}
       : { expectedSourceSetSha256: input.expectedSourceSetSha256 });
   assertWorkerSelection(module.description, input.selection);
+  assertStockNodeWorkerTransport(module.description.connectionProfiles![input.selection.profileId]!);
   const grant = await createNodeAuthoredAcquisition()(module.description, input.selection);
   if (grant.modeId !== input.selection.modeId || grant.profileId !== input.selection.profileId) {
     throw new Error("authored.acquisition.selection-mismatch: worker grant differs from admitted selection");
@@ -52,6 +55,18 @@ export async function createNodeAuthoredWorkerSession(
     resourceBroker: services.resourceBroker,
     captureDestinationAdapter: services.captureDestinationAdapter,
   }, input.expectedSourceSetSha256)).server;
+}
+
+export function assertStockNodeWorkerTransport(
+  profile: NonNullable<AuthoredDescription["connectionProfiles"]>[string],
+): void {
+  if (profile.transport.kind === "serial") {
+    throw expectedCliError(
+      "authored.acquisition.worker-serial-unavailable",
+      "stock --worker serial acquisition is unavailable; the native serial read completion cannot be delivered safely inside a worker thread; rerun without --worker",
+      "invocation",
+    );
+  }
 }
 
 function assertWorkerSelection(

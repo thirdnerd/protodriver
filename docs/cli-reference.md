@@ -38,7 +38,7 @@ failure classification from silently acquiring an actionable exit status.
 ## Commands
 
 ```text
-pdr run <device-directory-or-package> [--mode id] <operation> [flags]
+pdr run <device-directory-or-package> [--mode id] [--profile id] [--candidate id | --serial-path path] <operation> [flags]
 pdr inspect <device-directory-or-package>
 pdr pack <device-source-directory> <output-package>
 pdr --version
@@ -46,3 +46,25 @@ pdr --version
 
 Use `pdr --help` for the current synopsis and `pdr run <package>` for the
 operations and generated flags admitted from that package.
+
+### Serial selection
+
+Ordinary Node acquisition enumerates serial ports, applies the selected
+profile's VID/PID acquisition filters, and accepts `--candidate <id>` only for
+an opaque candidate id from that result. `--candidate` never names a new path.
+
+`--serial-path <path>` is an explicit Node-host grant for the operator-named
+serial endpoint. It skips serial enumeration and bypasses the profile's
+VID/PID discovery filters. It remains subject to the admitted mode and serial
+profile, operation availability, line parameters, lifecycle policy, channel
+duplex, and module entry checks. The host records only path-derived identity;
+it does not infer vendor, product, manufacturer, or serial-number evidence
+from the declaration. `--serial-path` and `--candidate` are mutually exclusive.
+
+The stock `--worker run` adapter refuses all serial profiles before it opens a
+port, whether the port would have been enumerated or named with `--serial-path`.
+The pinned native bindings cannot deliver serial read completion safely from a
+Node worker thread. This is an `invocation` failure (status 5), because the
+caller must rerun without `--worker`; it does not indicate broken host
+resources or configuration. There is no browser or USB equivalent to
+`--serial-path`; browser acquisition remains subject to its permission chooser.

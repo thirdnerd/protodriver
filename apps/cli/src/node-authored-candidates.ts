@@ -47,7 +47,7 @@ const getDeviceList = (require("usb") as {
   readonly getDeviceList: () => readonly NativeUsbDevice[];
 }).getDeviceList;
 
-type SerialProfile = Extract<AuthoredConnectionProfile, { readonly transport: { readonly kind: "serial" } }> & {
+export type SerialProfile = Extract<AuthoredConnectionProfile, { readonly transport: { readonly kind: "serial" } }> & {
   readonly id: string;
 };
 type UsbProfile = Extract<AuthoredConnectionProfile, { readonly transport: { readonly kind: "usb" } }> & {
@@ -110,6 +110,42 @@ async function serialCandidates(
   });
 }
 
+/** Explicit Node host grant. Package data never supplies this path. */
+export function nodeSerialPathCandidate(
+  profile: SerialProfile,
+  modeId: string,
+  clock: RealClock,
+  path: string,
+  transport: Pick<NodeSerialTransport, "open"> = new NodeSerialTransport({ clock }),
+): SelectedAuthoredCandidate {
+  if (profile.channels[0].id !== "main") {
+    throw new Error("authored.acquisition.refused: Node serial supports only the main channel; use an explicit host-supplied grant");
+  }
+  const identity: PhysicalDeviceIdentity = {
+    transport: "serial",
+    portPath: path,
+    stableKeyAssurance: "path-derived",
+    stableKey: path,
+  };
+  return {
+    candidate: {
+      candidateId: `serial:${path}` as CandidateId,
+      identity,
+      displayName: `Operator-selected serial path ${path}`,
+      matchedProfileId: profile.id,
+    },
+    open: () => transport.open({
+      path,
+      profileId: profile.id,
+      modeId,
+      identity,
+      line: profile.transport,
+      lifecycle: profile.lifecycle,
+      protocolDuplex: profile.channels[0].protocolDuplex,
+    }),
+  };
+}
+
 function serialFilterMatches(
   filter: { readonly vendorId?: number; readonly productId?: number },
   port: { readonly vendorId?: string | undefined; readonly productId?: string | undefined },
@@ -118,7 +154,7 @@ function serialFilterMatches(
     && (filter.productId === undefined || filter.productId === parseHexId(port.productId));
 }
 
-function isSerialProfile(
+export function isSerialProfile(
   profile: AuthoredConnectionProfile & { readonly id: string },
 ): profile is SerialProfile {
   return profile.transport.kind === "serial";

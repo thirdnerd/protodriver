@@ -64,7 +64,7 @@ DemoBench thermostat — Set target
 
 Change the requested temperature; do not retry after uncertainty.
 
-Usage: pdr run <package> [--mode id] [--profile id] [--candidate id] [--expect-source-set-sha256 hex] [--json] set_target [flags]
+Usage: pdr run <package> [--mode id] [--profile id] [--candidate id | --serial-path path] [--expect-source-set-sha256 hex] [--json] set_target [flags]
 
 Risk: destructive
 Repeatability: not-repeatable

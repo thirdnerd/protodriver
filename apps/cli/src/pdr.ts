@@ -42,7 +42,7 @@ export async function runPdr(
   }
   if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
     io.output.write(`Usage:
-  pdr run <device-directory-or-package> [--mode id] <operation> [flags]
+  pdr run <device-directory-or-package> [--mode id] [--profile id] [--candidate id | --serial-path path] <operation> [flags]
   pdr inspect <device-directory-or-package>
   pdr pack <device-source-directory> <output-package>
   pdr --version

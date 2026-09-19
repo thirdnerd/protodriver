@@ -323,10 +323,13 @@ an envelope with one materialized Lua value.
 ## Current product boundary
 
 Current contract-2 packages run through direct Node, the ordinary browser, and
-serialized Node `--worker run`. `pdr inspect` describes generated package output;
-for contract-2 authoring, use pack admission plus generated mode and operation
-help. The browser’s live protocol view is raw transmit/receive evidence, not an
-authored frame debugger.
+serialized Node `--worker run`, subject to the transports each host can grant.
+The stock worker refuses serial profiles before opening a port because the
+pinned native bindings cannot deliver serial read completion safely from a
+Node worker thread; use direct Node for those profiles. `pdr inspect` describes
+generated package output; for contract-2 authoring, use pack admission plus
+generated mode and operation help. The browser’s live protocol view is raw
+transmit/receive evidence, not an authored frame debugger.
 
 Generated help and inspect do not enumerate acquisition candidates. The CLI has
 no list-only authored-candidate command. An actual operation begins acquisition

@@ -16,7 +16,7 @@ Profile usb: usb; modes screenshot
 $ node apps/cli/src/pdr.ts run ti84-plus-ce.pdpkg capture_screenshot --help
 ti84-plus-ce — Capture screenshot
 
-Usage: pdr run <package> [--mode id] [--profile id] [--candidate id] [--expect-source-set-sha256 hex] [--json] [--save-result path] capture_screenshot
+Usage: pdr run <package> [--mode id] [--profile id] [--candidate id | --serial-path path] [--expect-source-set-sha256 hex] [--json] [--save-result path] capture_screenshot
 
 Risk: read-only
 Repeatability: safe-to-repeat
