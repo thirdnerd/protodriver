@@ -4328,9 +4328,12 @@ async function valueDigest(value, c) {
 function prefix(checkpoint) {
   return checkpoint.confirmedRanges[0]?.length ?? 0;
 }
+function checkpointAssurance(checkpoint) {
+  return checkpoint.identity.stableKeyAssurance === "serial-number" ? "verified" : "unverified";
+}
 function inspectAuthoredCheckpoint(value, identity, operation) {
   requireThat(
-    value && value.formatVersion === 1 && value.authoredTransfer?.version === 1,
+    value && value.formatVersion === 2 && value.authoredTransfer?.version === 1,
     "transfer.checkpoint-invalid",
     "missing or non-authored checkpoint; old checkpoints are not converted"
   );
@@ -4344,16 +4347,15 @@ function inspectAuthoredCheckpoint(value, identity, operation) {
   requireThat(typeof value.id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.id) && integer(value.revision) && hex(value.manifestHash) && hex(value.definitionHash) && hex(a.argumentsDigest) && hex(a.policyDigest) && typeof a.operation === "string" && a.operation.length <= 128 && typeof a.cookie === "string" && /^[0-9a-f]{0,256}$/.test(a.cookie) && integer(a.targetOffset) && integer(a.targetLength) && integer(a.admittedEnd) && value.source?.algorithm === "sha256" && hex(value.source.digest) && integer(value.source.byteLength) && value.source.byteLength > 0 && (a.streamed ? a.streamed.version === 1 && hex(a.streamed.committedDigest) && hex(a.streamed.submittedDigest) : value.source.byteLength <= 65536) && a.targetOffset + value.source.byteLength <= a.targetLength && a.admittedEnd <= value.source.byteLength && value.direction === "hostToDevice" && ["repeatable", "not-repeatable"].includes(value.finalization) && ["preparing", "prepared", "transferring", "finalizing", "verifying"].includes(value.phase) && Array.isArray(value.confirmedRanges) && value.confirmedRanges.length <= 1 && (value.confirmedRanges.length === 0 || value.confirmedRanges[0].targetOffset === a.targetOffset && integer(value.confirmedRanges[0].length) && value.confirmedRanges[0].length > 0 && value.confirmedRanges[0].length <= a.admittedEnd), "transfer.checkpoint-invalid", "invalid authored checkpoint fields");
   requireThat(value.manifestHash === identity.execution, "transfer.resume.manifest-mismatch", "complete execution identity changed");
   requireThat(value.modeId === identity.mode, "transfer.resume.mode-mismatch", "mode changed");
-  requireThat(value.identity?.stableKey === identity.device, "transfer.resume.identity-mismatch", "host device identity changed");
+  requireThat(
+    value.identity?.stableKeyAssurance === identity.deviceAssurance && value.identity.stableKey === identity.device,
+    "transfer.resume.identity-mismatch",
+    "host device identity changed"
+  );
   requireThat(
     value.identity.generation === null || typeof value.identity.generation === "string" && /^[0-9]{1,16}$/.test(value.identity.generation),
     "transfer.checkpoint-invalid",
     "invalid generation"
-  );
-  requireThat(
-    value.identity.assurance === (identity.device !== null || value.identity.generation !== null ? "verified" : "unverified"),
-    "transfer.checkpoint-invalid",
-    "identity assurance does not follow recorded evidence"
   );
   requireThat(a.policyDigest === identity.policy, "transfer.resume.definition-mismatch", "settlement resource policy changed");
   if (operation) {
@@ -4585,7 +4587,7 @@ var AuthoredTransfer = class _AuthoredTransfer {
     if (!this.#claim) {
       const config = this.operation.transfer;
       const checkpoint = {
-        formatVersion: 1,
+        formatVersion: 2,
         id: "authored-" + crypto.randomUUID(),
         revision: 0,
         manifestHash: this.#identity.execution,
@@ -4598,7 +4600,7 @@ var AuthoredTransfer = class _AuthoredTransfer {
           byteLength: this.#length,
           ...this.sourceSubject ? { subject: this.sourceSubject } : {}
         },
-        identity: { stableKey: this.#identity.device, generation: null, assurance: this.#identity.device === null ? "unverified" : "verified" },
+        identity: { stableKeyAssurance: this.#identity.deviceAssurance, stableKey: this.#identity.device, generation: null },
         phase: "preparing",
         confirmedRanges: [],
         finalization: config.finalization,
@@ -4652,7 +4654,7 @@ var AuthoredTransfer = class _AuthoredTransfer {
     else requireThat(!this.#resuming, "transfer.resume.preparation-incomplete", "interrupted begin has no bound device generation");
     await this.#commit({
       phase: "transferring",
-      identity: { ...cp.identity, generation: String(generation), assurance: "verified" },
+      identity: { ...cp.identity, generation: String(generation) },
       authoredTransfer: { ...a, cookie, ...this.#stream ? { streamed: { ...a.streamed, committedDigest: this.#stream.commit(committed) } } : {} },
       confirmedRanges: committed ? [{ targetOffset: a.targetOffset, length: committed }] : []
     });
@@ -9293,6 +9295,7 @@ var RetainedSessionRpcServer = class {
       execution: this.#options.executionIdentity.digest,
       mode: this.#options.modeId,
       device: this.#connection?.identity.stableKey ?? null,
+      deviceAssurance: this.#connection?.identity.stableKeyAssurance ?? "none",
       policy: this.#options.checkpointPolicyDigest
     };
   }
@@ -9315,7 +9318,7 @@ var RetainedSessionRpcServer = class {
       inspectAuthoredCheckpoint(cp, identity, op);
       if (cp.identity.generation === null) throw fault("transfer.resume.preparation-incomplete", "checkpoint has no completed device binding");
       this.#stamp();
-      return { assurance: cp.identity.assurance, checkpoint: cp };
+      return { assurance: checkpointAssurance(cp), checkpoint: cp };
     } finally {
       this.#checkpointInspection = false;
     }
@@ -13098,7 +13101,7 @@ function safeInteger(value, path, minimum = 0) {
 }
 function validateTransferCheckpoint(checkpoint) {
   const path = `checkpoints.${checkpoint.id}`;
-  if (checkpoint.formatVersion !== 1) throw checkpointError("transfer.checkpoint-invalid", `${path}.formatVersion`, "unsupported checkpoint format");
+  if (checkpoint.formatVersion !== 2) throw checkpointError("transfer.checkpoint-invalid", `${path}.formatVersion`, "unsupported checkpoint format");
   nonempty(checkpoint.id, `${path}.id`);
   safeInteger(checkpoint.revision, `${path}.revision`);
   lowercaseDigest(checkpoint.manifestHash, `${path}.manifestHash`);
@@ -13146,19 +13149,17 @@ function validateTransferCheckpoint(checkpoint) {
   }
   lowercaseDigest(checkpoint.source.digest, `${path}.source.digest`);
   safeInteger(checkpoint.source.byteLength, `${path}.source.byteLength`, 1);
-  if (checkpoint.identity.stableKey !== null) nonempty(checkpoint.identity.stableKey, `${path}.identity.stableKey`);
+  if (!["serial-number", "path-derived", "none"].includes(checkpoint.identity.stableKeyAssurance)) {
+    throw checkpointError("transfer.checkpoint-invalid", `${path}.identity.stableKeyAssurance`, "stable-key assurance is not recognized");
+  }
+  if (checkpoint.identity.stableKeyAssurance === "none") {
+    if (checkpoint.identity.stableKey !== null) {
+      throw checkpointError("transfer.checkpoint-invalid", `${path}.identity.stableKey`, "identity without stable-key assurance must not carry a stable key");
+    }
+  } else if (checkpoint.identity.stableKey === null) {
+    throw checkpointError("transfer.checkpoint-invalid", `${path}.identity.stableKey`, "assured identity must carry a stable key");
+  } else nonempty(checkpoint.identity.stableKey, `${path}.identity.stableKey`);
   if (checkpoint.identity.generation !== null) nonempty(checkpoint.identity.generation, `${path}.identity.generation`);
-  if (checkpoint.identity.assurance !== "verified" && checkpoint.identity.assurance !== "unverified") {
-    throw checkpointError("transfer.checkpoint-invalid", `${path}.identity.assurance`, "identity assurance is not recognized");
-  }
-  const identityAssurance = checkpoint.identity.stableKey === null && checkpoint.identity.generation === null ? "unverified" : "verified";
-  if (checkpoint.identity.assurance !== identityAssurance) {
-    throw checkpointError(
-      "transfer.checkpoint-invalid",
-      `${path}.identity.assurance`,
-      `identity assurance must be ${identityAssurance} for the recorded continuity evidence`
-    );
-  }
   let previousEnd = -1;
   for (const [index, range] of checkpoint.confirmedRanges.entries()) {
     const rangePath = `${path}.confirmedRanges.${index}`;
