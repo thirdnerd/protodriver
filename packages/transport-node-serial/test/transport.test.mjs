@@ -11,6 +11,7 @@ import {
   SerialHalfDuplexError,
   SerialPortHeldError,
   drainSerialUntilQuiet,
+  serialExclusiveReleaseRequest,
 } from "../src/index.ts";
 
 const identity = {
@@ -134,6 +135,8 @@ function enforceExclusive() {
   return Promise.resolve();
 }
 
+function releaseExclusive() {}
+
 function inspectTermios() {
   return Promise.resolve();
 }
@@ -144,6 +147,7 @@ async function openFake(clock, port = new FakePort(), protocolDuplex = "half-dup
     createPort: () => port,
     configureTermios: inspectTermios,
     enforceExclusive,
+    releaseExclusive,
   });
   const opening = transport.open({
     path: "/dev/ttyUSB0",
@@ -211,6 +215,9 @@ test("exclusion precedes termios and an explicit zero drain preserves buffered i
     enforceExclusive: async () => {
       events.push("exclusive");
     },
+    releaseExclusive: () => {
+      events.push("release");
+    },
   });
   const connection = await transport.open({
     path: "/dev/ttyUSB0",
@@ -241,6 +248,45 @@ test("exclusion precedes termios and an explicit zero drain preserves buffered i
     autoOpen: false,
   });
   await connection.close();
+  assert.deepEqual(events, ["open", "exclusive", "termios", "release", "close"]);
+});
+
+test("exclusive release requests match the target tty ABI", () => {
+  assert.equal(serialExclusiveReleaseRequest("linux"), 0x540d);
+  assert.equal(serialExclusiveReleaseRequest("darwin"), 0x2000740e);
+  assert.equal(serialExclusiveReleaseRequest("win32"), undefined);
+});
+
+test("an opening failure after exclusion releases before closing", async () => {
+  const port = new FakePort();
+  const transport = new NodeSerialTransport({
+    clock: new VirtualClock(),
+    createPort: () => port,
+    configureTermios: async () => {
+      port.events.push("termios");
+      throw new Error("termios inspection failed");
+    },
+    enforceExclusive: async () => {
+      port.events.push("exclusive");
+    },
+    releaseExclusive: () => {
+      port.events.push("release");
+    },
+  });
+
+  await assert.rejects(
+    transport.open({
+      path: "/dev/ttyUSB0",
+      profileId: "device-1.serial",
+      modeId: "normal",
+      protocolDuplex: "half-duplex",
+      identity,
+      line: LINE,
+      lifecycle: NO_LIFECYCLE_DELAY,
+    }),
+    (error) => error.error?.code === "transport.open-failed",
+  );
+  assert.deepEqual(port.events, ["open", "exclusive", "termios", "release", "close"]);
 });
 
 test("invalid serial profile policy fails by name before the native port is created", async () => {
@@ -340,6 +386,7 @@ test("a node-serialport lock failure names the other context", async () => {
     createPort: () => port,
     configureTermios: inspectTermios,
     enforceExclusive,
+    releaseExclusive,
   });
 
   await assert.rejects(
@@ -544,6 +591,7 @@ test("a profile with no mode-exit obligation closes without recovery silence", a
     createPort: () => port,
     configureTermios: inspectTermios,
     enforceExclusive,
+    releaseExclusive,
   });
   const connection = await transport.open({
     path: "/dev/ttyUSB0",

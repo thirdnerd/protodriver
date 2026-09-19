@@ -219,6 +219,7 @@ export interface NodeSerialTransportOptions {
   readonly createPort?: (options: SerialPortFactoryOptions) => SerialPortLike;
   readonly configureTermios?: (port: SerialPortLike) => Promise<void>;
   readonly enforceExclusive?: (port: SerialPortLike) => Promise<void>;
+  readonly releaseExclusive?: (port: SerialPortLike) => void;
 }
 
 function pdrError(
@@ -348,6 +349,20 @@ function closePort(port: SerialPortLike): Promise<void> {
   });
 }
 
+async function releaseAndClosePort(
+  port: SerialPortLike,
+  releaseExclusive: (port: SerialPortLike) => void,
+): Promise<void> {
+  // A non-local native close can remove the descriptor before it is observable
+  // here. There is no fd left for TIOCNXCL in that case.
+  if (!port.isOpen) return;
+  try {
+    releaseExclusive(port);
+  } finally {
+    await closePort(port);
+  }
+}
+
 async function inspectNativeTermios(port: SerialPortLike): Promise<void> {
   if (process.platform === "win32") {
     return;
@@ -393,6 +408,15 @@ export function serialExclusiveRequest(platform: NodeJS.Platform = process.platf
   return undefined;
 }
 
+export function serialExclusiveReleaseRequest(
+  platform: NodeJS.Platform = process.platform,
+): number | undefined {
+  if (platform === "linux") return 0x540d;
+  // Darwin: TIOCNXCL is _IO('t', 14), where IOC_VOID is 0x20000000.
+  if (platform === "darwin") return 0x2000740e;
+  return undefined;
+}
+
 async function enforcePlatformExclusive(
   port: SerialPortLike,
 ): Promise<void> {
@@ -412,6 +436,23 @@ async function enforcePlatformExclusive(
   // cross-process corruption this exclusion exists to prevent.
   const ioctl = platformIoctl();
   if (ioctl === undefined) throw new Error("TIOCEXCL is unavailable on this platform");
+  ioctl(fd, request);
+}
+
+function releasePlatformExclusive(port: SerialPortLike): void {
+  if (process.platform === "win32" || !port.isOpen) return;
+  const request = serialExclusiveReleaseRequest();
+  if (request === undefined) {
+    throw new Error(`serial exclusion release has no implementation for ${process.platform}`);
+  }
+  const fd = serialDescriptor(port);
+  const ioctl = platformIoctl();
+  if (ioctl === undefined) throw new Error("TIOCNXCL is unavailable on this platform");
+  // TIOCNXCL creates a microsecond-scale interval before close in which another
+  // opener can enter. Its apparent protection during that interval is illusory
+  // on a real tty, which clears TIOCEXCL at its last close anyway, while a pty
+  // can retain it for the master's lifetime. Clear it here so closing this fd
+  // does not leave the pty unusable after protodriver has released ownership.
   ioctl(fd, request);
 }
 
@@ -729,6 +770,7 @@ export class NodeSerialConnection implements DeviceConnection {
   readonly #channel: NodeSerialChannel;
   readonly #clock: Clock;
   readonly #lifecycle: SerialProfileLifecyclePolicy;
+  readonly #releaseExclusive: (port: SerialPortLike) => void;
   readonly #noteRecovery: (path: string, minimumMs: number) => void;
   readonly #waitForRecovery: (path: string) => Promise<void>;
   #resolveTermination!: (termination: TransportTermination) => void;
@@ -747,6 +789,7 @@ export class NodeSerialConnection implements DeviceConnection {
     readonly clock: Clock;
     readonly open: NodeSerialOpenOptions;
     readonly lifecycle: SerialProfileLifecyclePolicy;
+    readonly releaseExclusive: (port: SerialPortLike) => void;
     readonly noteRecovery: (path: string, minimumMs: number) => void;
     readonly waitForRecovery: (path: string) => Promise<void>;
   }) {
@@ -757,6 +800,7 @@ export class NodeSerialConnection implements DeviceConnection {
     this.modeId = options.open.modeId;
     this.profileId = options.open.profileId;
     this.#lifecycle = options.lifecycle;
+    this.#releaseExclusive = options.releaseExclusive;
     this.#noteRecovery = options.noteRecovery;
     this.#waitForRecovery = options.waitForRecovery;
     this.terminated = new Promise((resolve) => { this.#resolveTermination = resolve; });
@@ -848,13 +892,13 @@ export class NodeSerialConnection implements DeviceConnection {
   async #close(): Promise<void> {
     if (!this.usable) {
       await this.#waitForRecovery(this.path);
-      await closePort(this.#port).catch(() => {});
+      await releaseAndClosePort(this.#port, this.#releaseExclusive).catch(() => {});
       return;
     }
     if (this.usable) {
       this.#hostClosing = true;
       try {
-        await closePort(this.#port);
+        await releaseAndClosePort(this.#port, this.#releaseExclusive);
       } catch (cause) {
         const normalized = errorCause(cause);
         if (this.usable) this.#finish({ kind: "fault", error: pdrError(
@@ -932,6 +976,7 @@ export class NodeSerialTransport {
   readonly #createPort: (options: SerialPortFactoryOptions) => SerialPortLike;
   readonly #configureTermios: NonNullable<NodeSerialTransportOptions["configureTermios"]>;
   readonly #enforceExclusive: NonNullable<NodeSerialTransportOptions["enforceExclusive"]>;
+  readonly #releaseExclusive: NonNullable<NodeSerialTransportOptions["releaseExclusive"]>;
   readonly #recoveryNotBeforeUs = new Map<string, number>();
   readonly #openingPaths = new Set<string>();
 
@@ -940,6 +985,7 @@ export class NodeSerialTransport {
     this.#createPort = options.createPort ?? ((serialOptions) => new SerialPort(serialOptions));
     this.#configureTermios = options.configureTermios ?? inspectNativeTermios;
     this.#enforceExclusive = options.enforceExclusive ?? enforcePlatformExclusive;
+    this.#releaseExclusive = options.releaseExclusive ?? releasePlatformExclusive;
   }
 
   async open(options: NodeSerialOpenOptions): Promise<NodeSerialConnection> {
@@ -993,6 +1039,7 @@ export class NodeSerialTransport {
           port,
           options.path,
           abnormalSilenceMs(options.lifecycle),
+          false,
         );
         throw new SerialPortOpenError(options.path, cause);
       }
@@ -1007,6 +1054,7 @@ export class NodeSerialTransport {
           port,
           options.path,
           abnormalSilenceMs(options.lifecycle),
+          false,
         );
         throw new SerialPortOpenError(options.path, errorCause(cause));
       }
@@ -1019,6 +1067,7 @@ export class NodeSerialTransport {
           port,
           options.path,
           abnormalSilenceMs(options.lifecycle),
+          true,
         );
         throw new SerialPortOpenError(options.path, errorCause(cause));
       }
@@ -1041,6 +1090,7 @@ export class NodeSerialTransport {
           port,
           options.path,
           abnormalSilenceMs(options.lifecycle),
+          true,
         );
         throw new SerialPortOpenError(options.path, errorCause(cause));
       } finally {
@@ -1053,6 +1103,7 @@ export class NodeSerialTransport {
           port,
           options.path,
           abnormalSilenceMs(options.lifecycle),
+          true,
         );
         throw new SerialPortOpenError(options.path, cause);
       }
@@ -1062,6 +1113,7 @@ export class NodeSerialTransport {
         clock: this.#clock,
         open: options,
         lifecycle: options.lifecycle,
+        releaseExclusive: this.#releaseExclusive,
         noteRecovery: (path, minimumMs) => this.#noteRecovery(path, minimumMs),
         waitForRecovery: (path) => this.#waitForRecovery(path),
       });
@@ -1082,8 +1134,11 @@ export class NodeSerialTransport {
     port: SerialPortLike,
     path: string,
     minimumMs: number,
+    releaseExclusive: boolean,
   ): Promise<void> {
-    await closePort(port).catch(() => {});
+    await (releaseExclusive
+      ? releaseAndClosePort(port, this.#releaseExclusive)
+      : closePort(port)).catch(() => {});
     this.#noteRecovery(path, minimumMs);
     await this.#waitForRecovery(path);
   }
